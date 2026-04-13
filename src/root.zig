@@ -75,10 +75,13 @@ pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Resul
         }
     }
 
+    if (opts.samples == 0) @panic("samples must be at least 1");
+
     if (opts.samples > 1) {
-        const allocator = opts.allocator orelse @panic("when using more then one sample, an allocator needs to be passed in the options");
+        const allocator = opts.allocator orelse @panic("when using more than one sample, an allocator needs to be passed in the options");
 
         const durations_ns = try allocator.alloc(i96, opts.samples);
+        defer allocator.free(durations_ns);
 
         durations_ns[0] = duration_ns;
         for (1..opts.samples) |i| {
@@ -111,7 +114,7 @@ pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Resul
             const diff = @as(f64, @floatFromInt(duration)) / @as(f64, @floatFromInt(iterations)) - mean_ns;
             sum += diff * diff;
         }
-        const std_ns = @sqrt(sum / @as(f64, @floatFromInt(opts.samples)));
+        const std_ns = @sqrt(sum / @as(f64, @floatFromInt(opts.samples - 1)));
 
         return .{
             .name = name,
