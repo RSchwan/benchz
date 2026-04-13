@@ -1,7 +1,6 @@
 const std = @import("std");
 
 const Allocator = std.mem.Allocator;
-const Threaded = std.Io.Threaded;
 const Clock = std.Io.Clock;
 const Duration = std.Io.Duration;
 
@@ -32,14 +31,16 @@ pub const Result = struct {
 pub const Error = error{InvalidSampleCount};
 
 pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype, opts: Options) (Error || Allocator.Error)!Result {
+    if (opts.samples == 0) return error.InvalidSampleCount;
+
     checkFuncAndArgs(@TypeOf(func), @TypeOf(args));
 
     // convert types in args tuple to match actual function parameters
     // e.g. convert comptime_int to u64
     const Params = std.meta.ArgsTuple(unwrapPointerType(@TypeOf(func)));
-    const paramsLength = @typeInfo(unwrapPointerType(@TypeOf(func))).@"fn".params.len;
+    const params_len = @typeInfo(unwrapPointerType(@TypeOf(func))).@"fn".params.len;
     var params: Params = undefined;
-    inline for (0..paramsLength) |i| {
+    inline for (0..params_len) |i| {
         params[i] = args[i];
     }
     // clobber parameters to prevent constant folding
@@ -58,7 +59,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
     while (true) {
         const start = opts.clock.now(io);
         for (0..iterations) |_| {
-            try execute(func, params);
+            try runFunc(func, params);
         }
         const end = opts.clock.now(io);
         duration_ns = start.durationTo(end).toNanoseconds();
@@ -89,7 +90,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
         for (1..opts.samples) |i| {
             const start = opts.clock.now(io);
             for (0..iterations) |_| {
-                try execute(func, params);
+                try runFunc(func, params);
             }
             const end = opts.clock.now(io);
             durations_ns[i] = start.durationTo(end).toNanoseconds();
@@ -170,7 +171,7 @@ fn unwrapPointerType(comptime T: type) type {
     return T;
 }
 
-inline fn execute(func: anytype, args: anytype) !void {
+inline fn runFunc(func: anytype, args: anytype) !void {
     const FnType = unwrapPointerType(@TypeOf(func));
     const return_type = @typeInfo(FnType).@"fn".return_type.?;
 
