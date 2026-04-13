@@ -11,8 +11,8 @@ pub const Options = struct {
     clock_resolution_multiple: u32 = 1000,
     min_run_time: Duration = Duration.fromMilliseconds(1),
     min_iterations: u64 = 1,
-    samples: u64 = 1,
-    allocator: ?Allocator = null,
+    max_iterations: u64 = 10_000_000,
+    samples: u64 = 11,
 };
 
 pub const Result = struct {
@@ -20,6 +20,7 @@ pub const Result = struct {
     unit: []const u8,
 
     iterations: u64,
+    samples: u64,
 
     min_ns: f64,
     max_ns: f64,
@@ -28,7 +29,9 @@ pub const Result = struct {
     std_ns: f64,
 };
 
-pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Result {
+pub const Error = error{InvalidSampleCount};
+
+pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype, opts: Options) (Error || Allocator.Error)!Result {
     checkFuncAndArgs(@TypeOf(func), @TypeOf(args));
 
     // convert types in args tuple to match actual function parameters
@@ -52,7 +55,7 @@ pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Resul
 
     var iterations = opts.min_iterations;
     var duration_ns: i96 = 0;
-    while (iterations < 10_000_000) {
+    while (true) {
         const start = opts.clock.now(io);
         for (0..iterations) |_| {
             try execute(func, params);
@@ -60,7 +63,7 @@ pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Resul
         const end = opts.clock.now(io);
         duration_ns = start.durationTo(end).toNanoseconds();
 
-        if (duration_ns >= min_run_time_ns) break;
+        if (duration_ns >= min_run_time_ns or iterations >= opts.max_iterations) break;
 
         if (duration_ns == 0) {
             iterations *= 100;
@@ -73,13 +76,12 @@ pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Resul
                 iterations *= multiplier;
             }
         }
+        iterations = @min(iterations, opts.max_iterations);
     }
 
-    if (opts.samples == 0) @panic("samples must be at least 1");
+    if (opts.samples == 0) return error.InvalidSampleCount;
 
     if (opts.samples > 1) {
-        const allocator = opts.allocator orelse @panic("when using more than one sample, an allocator needs to be passed in the options");
-
         const durations_ns = try allocator.alloc(i96, opts.samples);
         defer allocator.free(durations_ns);
 
@@ -120,6 +122,7 @@ pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Resul
             .name = name,
             .unit = opts.unit,
             .iterations = iterations,
+            .samples = opts.samples,
             .min_ns = @as(f64, @floatFromInt(durations_ns[0])) / @as(f64, @floatFromInt(iterations)),
             .max_ns = @as(f64, @floatFromInt(durations_ns[opts.samples - 1])) / @as(f64, @floatFromInt(iterations)),
             .mean_ns = mean_ns,
@@ -134,6 +137,7 @@ pub fn run(name: []const u8, func: anytype, args: anytype, opts: Options) !Resul
         .name = name,
         .unit = opts.unit,
         .iterations = iterations,
+        .samples = 1,
         .min_ns = mean_ns,
         .max_ns = mean_ns,
         .mean_ns = mean_ns,

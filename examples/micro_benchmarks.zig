@@ -29,11 +29,13 @@ fn powerFast(x: u64, n: u64) u64 {
     return result;
 }
 
-pub fn main() !void {
-    const noopResult = try benchz.run("noop", noop, .{}, .{});
-    const addResult = try benchz.run("add", add, .{ 1, 2 }, .{});
-    const powerNativeResult = try benchz.run("powerNaive(2, 60)", powerNaive, .{ 2, 60 }, .{});
-    const powerFastResult = try benchz.run("powerFast(2, 60)", powerFast, .{ 2, 60 }, .{});
+pub fn main(init: std.process.Init) !void {
+    const allocator = init.gpa;
+
+    const noopResult = try benchz.run(allocator, "noop", noop, .{}, .{});
+    const addResult = try benchz.run(allocator, "add", add, .{ 1, 2 }, .{});
+    const powerNativeResult = try benchz.run(allocator, "powerNaive(2, 60)", powerNaive, .{ 2, 60 }, .{});
+    const powerFastResult = try benchz.run(allocator, "powerFast(2, 60)", powerFast, .{ 2, 60 }, .{});
 
     const results = [_]benchz.Result{ noopResult, addResult, powerNativeResult, powerFastResult };
 
