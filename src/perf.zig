@@ -22,8 +22,6 @@ pub const Error = error{
     PerfUnsupported,
     /// Insufficient privileges. Run with sudo or appropriate permissions.
     PermissionDenied,
-    /// On macOS, kpc can only be configured once per process.
-    AlreadyInitialized,
     DatabaseLoadFailed,
     ConfigCreateFailed,
     ConfigForceFailed,

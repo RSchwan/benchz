@@ -37,12 +37,6 @@ pub fn maxSimultaneousCounters() Error!usize {
     return fixed + configurable;
 }
 
-// KPC can only be reliably configured once per process. Reconfiguring
-// (stop → release → reacquire → start) corrupts counter state due to
-// async IPIs and Power Manager handoff races in the XNU kernel.
-// See: osfmk/x86_64/kpc_x86.c set_running_configurable(), kpc_set_config_mp_call()
-var initialized = false;
-
 pub const BackendState = struct {
     counter_map: [KPC_MAX_COUNTERS]usize = .{0} ** KPC_MAX_COUNTERS,
     counters_before: [KPC_MAX_COUNTERS]u64 = .{0} ** KPC_MAX_COUNTERS,
@@ -50,7 +44,6 @@ pub const BackendState = struct {
 
     pub fn init(counters: []const PerfCounter) Error!BackendState {
         if (counters.len == 0) return .{};
-        if (initialized) return error.AlreadyInitialized;
 
         try loadFrameworks();
 
@@ -112,7 +105,6 @@ pub const BackendState = struct {
         if (kpc_set_thread_counting.?(classes) != 0)
             return error.CountingStartFailed;
 
-        initialized = true;
         return state;
     }
 
@@ -123,7 +115,6 @@ pub const BackendState = struct {
         _ = kpc_set_thread_counting.?(0);
         _ = kpc_force_all_ctrs_set.?(0);
 
-        // initialized stays true — kpc cannot be reliably reconfigured.
         self.requested = &.{};
     }
 
