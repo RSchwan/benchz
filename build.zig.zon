@@ -1,7 +1,7 @@
 .{
     .name = .benchz,
     .version = "0.0.1",
-    .minimum_zig_version = "0.16.0-dev.3144+ac6fb0b59",
+    .minimum_zig_version = "0.16.0",
     .paths = .{""},
     .fingerprint = 0x29b07b0b45dd6604,
 }
