@@ -5,6 +5,7 @@ const Clock = std.Io.Clock;
 const Duration = std.Io.Duration;
 
 pub const perf = @import("perf.zig");
+pub const stats = @import("stats.zig");
 pub const PerfCounter = perf.PerfCounter;
 pub const PerfCounts = perf.PerfCounts;
 
@@ -87,55 +88,24 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
     }
 
     // Timing samples
-    var min_ns: f64 = undefined;
-    var max_ns: f64 = undefined;
-    var mean_ns: f64 = undefined;
-    var median_ns: f64 = undefined;
-    var std_ns: f64 = undefined;
+    const durations_ns = try allocator.alloc(i96, opts.samples);
+    defer allocator.free(durations_ns);
 
-    if (opts.samples > 1) {
-        const durations_ns = try allocator.alloc(i96, opts.samples);
-        defer allocator.free(durations_ns);
-
-        durations_ns[0] = duration_ns;
-        for (1..opts.samples) |i| {
-            const start = opts.clock.now(io);
-            try runIterations(iterations, func, params);
-            const end = opts.clock.now(io);
-            durations_ns[i] = start.durationTo(end).toNanoseconds();
-        }
-
-        std.mem.sortUnstable(i96, durations_ns, {}, std.sort.asc(i96));
-
-        var durations_sum: i96 = 0;
-        for (durations_ns) |duration| durations_sum += duration;
-        mean_ns = @as(f64, @floatFromInt(durations_sum)) / @as(f64, @floatFromInt(iterations * opts.samples));
-
-        median_ns = blk: {
-            const mid = durations_ns.len / 2;
-            if (durations_ns.len % 2 == 0) {
-                break :blk @as(f64, @floatFromInt(durations_ns[mid - 1] + durations_ns[mid])) / @as(f64, @floatFromInt(iterations * 2));
-            } else {
-                break :blk @as(f64, @floatFromInt(durations_ns[mid])) / @as(f64, @floatFromInt(iterations));
-            }
-        };
-
-        var sum: f64 = 0;
-        for (durations_ns) |duration| {
-            const diff = @as(f64, @floatFromInt(duration)) / @as(f64, @floatFromInt(iterations)) - mean_ns;
-            sum += diff * diff;
-        }
-        std_ns = @sqrt(sum / @as(f64, @floatFromInt(opts.samples - 1)));
-
-        min_ns = @as(f64, @floatFromInt(durations_ns[0])) / @as(f64, @floatFromInt(iterations));
-        max_ns = @as(f64, @floatFromInt(durations_ns[opts.samples - 1])) / @as(f64, @floatFromInt(iterations));
-    } else {
-        mean_ns = @as(f64, @floatFromInt(duration_ns)) / @as(f64, @floatFromInt(iterations));
-        median_ns = mean_ns;
-        std_ns = 0;
-        min_ns = mean_ns;
-        max_ns = mean_ns;
+    durations_ns[0] = duration_ns;
+    for (1..opts.samples) |i| {
+        const start = opts.clock.now(io);
+        try runIterations(iterations, func, params);
+        const end = opts.clock.now(io);
+        durations_ns[i] = start.durationTo(end).toNanoseconds();
     }
+
+    const timing = stats.Stats(i96).fromSlice(durations_ns).?;
+    const iterations_f: f64 = @floatFromInt(iterations);
+    const min_ns = timing.min / iterations_f;
+    const max_ns = timing.max / iterations_f;
+    const mean_ns = timing.mean / iterations_f;
+    const median_ns = timing.median / iterations_f;
+    const std_ns = timing.std / iterations_f;
 
     // Perf counter measurement — runs after timing samples so caches are warm.
     // If more counters are requested than hardware supports, they are split into
@@ -286,4 +256,9 @@ inline fn runFunc(func: anytype, args: anytype) !void {
         const result = @call(.auto, func, args);
         std.mem.doNotOptimizeAway(result);
     }
+}
+
+test {
+    _ = perf;
+    _ = stats;
 }
