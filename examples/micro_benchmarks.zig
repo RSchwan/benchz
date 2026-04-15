@@ -29,6 +29,23 @@ fn powerFast(x: u64, n: u64) u64 {
     return result;
 }
 
+fn fibRecursive(n: u32) u64 {
+    if (n <= 1) return n;
+    return fibRecursive(n - 1) + fibRecursive(n - 2);
+}
+
+fn fibIterative(n: u32) u64 {
+    if (n <= 1) return n;
+    var a: u64 = 0;
+    var b: u64 = 1;
+    for (1..n) |_| {
+        const tmp = a + b;
+        a = b;
+        b = tmp;
+    }
+    return b;
+}
+
 fn sequentialScan(buf: []const u8) u8 {
     var sum: u8 = 0;
     for (buf[0..4096]) |b| {
@@ -109,6 +126,8 @@ pub fn main(init: std.process.Init) !void {
         try benchz.run(allocator, "add", add, .{ 1, 2 }, opts),
         try benchz.run(allocator, "powerNaive(2, 60)", powerNaive, .{ 2, 60 }, opts),
         try benchz.run(allocator, "powerFast(2, 60)", powerFast, .{ 2, 60 }, opts),
+        try benchz.run(allocator, "fibRecursive(10)", fibRecursive, .{10}, opts),
+        try benchz.run(allocator, "fibIterative(10)", fibIterative, .{10}, opts),
     };
     printResults(&arith_results);
 

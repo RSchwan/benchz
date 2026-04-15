@@ -238,9 +238,10 @@ fn unwrapPointerType(comptime T: type) type {
 /// without this, the compiler may generate different loop code at each inline site,
 /// causing inconsistent perf counter readings between benchmarks.
 noinline fn runIterations(iterations: u64, func: anytype, args: anytype) !void {
-    std.mem.doNotOptimizeAway(&args);
+    var a = args;
     for (0..iterations) |_| {
-        try runFunc(func, args);
+        std.mem.doNotOptimizeAway(&a);
+        try runFunc(func, a);
     }
 }
 
@@ -256,6 +257,157 @@ inline fn runFunc(func: anytype, args: anytype) !void {
         const result = @call(.auto, func, args);
         std.mem.doNotOptimizeAway(result);
     }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+fn testNoop() void {}
+
+fn testNoopError() !void {}
+
+fn testReturnU64() u64 {
+    return 42;
+}
+
+fn testReturnErrorU64() !u64 {
+    return 42;
+}
+
+fn testAdd(a: u64, b: u64) u64 {
+    return a +% b;
+}
+
+fn fibRecursive(n: u32) u64 {
+    if (n <= 1) return n;
+    return fibRecursive(n - 1) + fibRecursive(n - 2);
+}
+
+fn fibIterative(n: u32) u64 {
+    if (n <= 1) return n;
+    var a: u64 = 0;
+    var b: u64 = 1;
+    for (1..n) |_| {
+        const tmp = a + b;
+        a = b;
+        b = tmp;
+    }
+    return b;
+}
+
+fn sleepMicros(us: i64) void {
+    const io = testing.io;
+    io.sleep(Duration.fromMicroseconds(us), .awake) catch {};
+}
+
+const test_opts = Options{
+    .perf_counters = &.{},
+    .min_run_time = Duration.fromMicroseconds(100),
+    .samples = 3,
+};
+
+test "run: void function" {
+    const result = try run(testing.allocator, "noop", testNoop, .{}, test_opts);
+    try testing.expect(result.iterations > 0);
+    try testing.expect(result.min_ns >= 0);
+    try testing.expect(result.min_ns <= result.median_ns);
+    try testing.expect(result.median_ns <= result.max_ns);
+    try testing.expect(result.std_ns >= 0);
+}
+
+test "run: error union void function" {
+    const result = try run(testing.allocator, "noop_err", testNoopError, .{}, test_opts);
+    try testing.expect(result.iterations > 0);
+    try testing.expect(result.min_ns >= 0);
+}
+
+test "run: u64 return" {
+    const result = try run(testing.allocator, "ret_u64", testReturnU64, .{}, test_opts);
+    try testing.expect(result.iterations > 0);
+    try testing.expect(result.min_ns >= 0);
+}
+
+test "run: error union u64 return" {
+    const result = try run(testing.allocator, "ret_err_u64", testReturnErrorU64, .{}, test_opts);
+    try testing.expect(result.iterations > 0);
+    try testing.expect(result.min_ns >= 0);
+}
+
+test "run: function with arguments" {
+    const result = try run(testing.allocator, "add", testAdd, .{ @as(u64, 3), @as(u64, 4) }, test_opts);
+    try testing.expect(result.iterations > 0);
+    try testing.expect(result.min_ns >= 0);
+}
+
+test "run: function pointer" {
+    const ptr: *const fn (u64, u64) u64 = &testAdd;
+    const result = try run(testing.allocator, "add_ptr", ptr, .{ @as(u64, 3), @as(u64, 4) }, test_opts);
+    try testing.expect(result.iterations > 0);
+    try testing.expect(result.min_ns >= 0);
+}
+
+test "run: samples=0 returns error" {
+    const result = run(testing.allocator, "bad", testNoop, .{}, .{
+        .perf_counters = &.{},
+        .samples = 0,
+    });
+    try testing.expectError(error.InvalidSampleCount, result);
+}
+
+test "run: samples=1 produces zero std" {
+    const result = try run(testing.allocator, "noop_1", testNoop, .{}, .{
+        .perf_counters = &.{},
+        .min_run_time = Duration.fromMicroseconds(100),
+        .samples = 1,
+    });
+    try testing.expectEqual(@as(f64, 0), result.std_ns);
+    try testing.expectEqual(result.min_ns, result.max_ns);
+    try testing.expectEqual(result.min_ns, result.mean_ns);
+    try testing.expectEqual(result.min_ns, result.median_ns);
+}
+
+test "run: recursive fib is slower than iterative fib" {
+    const recursive = try run(testing.allocator, "fib_rec", fibRecursive, .{@as(u32, 20)}, test_opts);
+    const iterative = try run(testing.allocator, "fib_iter", fibIterative, .{@as(u32, 20)}, test_opts);
+    try testing.expect(recursive.median_ns > iterative.median_ns);
+}
+
+test "run: sleep timing is accurate" {
+    const sleep_us: i64 = 1000;
+    const result = try run(testing.allocator, "sleep", sleepMicros, .{sleep_us}, .{
+        .perf_counters = &.{},
+        .min_run_time = Duration.fromMicroseconds(0),
+        .min_iterations = 1,
+        .max_iterations = 1,
+        .samples = 3,
+    });
+    // Should be at least the sleep duration, and not more than 10x (generous for CI).
+    const expected_ns: f64 = @floatFromInt(sleep_us * std.time.ns_per_us);
+    try testing.expect(result.median_ns >= expected_ns * 0.9);
+    try testing.expect(result.median_ns < expected_ns * 10.0);
+}
+
+test "run: perf counters disabled returns all null" {
+    const result = try run(testing.allocator, "noop", testNoop, .{}, .{
+        .perf_counters = &.{},
+    });
+    for (std.enums.values(PerfCounter)) |counter| {
+        try testing.expect(result.perf.get(counter) == null);
+    }
+}
+
+test "run: respects max_iterations" {
+    const result = try run(testing.allocator, "noop", testNoop, .{}, .{
+        .perf_counters = &.{},
+        .min_run_time = Duration.fromMilliseconds(0),
+        .min_iterations = 1,
+        .max_iterations = 5,
+        .samples = 1,
+    });
+    try testing.expect(result.iterations <= 5);
 }
 
 test {
