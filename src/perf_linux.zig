@@ -100,7 +100,7 @@ pub const BackendState = struct {
     ids: [MAX_COUNTERS]u64 = .{0} ** MAX_COUNTERS,
     requested: []const PerfCounter = &.{},
 
-    /// Open a pinned event group for the requested counters.
+    /// Open an event group for the requested counters.
     pub fn init(counters: []const PerfCounter) Error!BackendState {
         if (counters.len == 0) return .{};
         if (counters.len > MAX_COUNTERS) return error.TooManyCounters;
@@ -120,7 +120,6 @@ pub const BackendState = struct {
                 PERF_FORMAT_TOTAL_TIME_RUNNING |
                 PERF_FORMAT_ID;
             attr.flags.disabled = (group_fd == -1);
-            attr.flags.pinned = (group_fd == -1);
             attr.flags.exclude_kernel = true;
             attr.flags.exclude_hv = true;
 

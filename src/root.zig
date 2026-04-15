@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 const Clock = std.Io.Clock;
@@ -39,6 +40,12 @@ pub const Result = struct {
 };
 
 pub const Error = error{InvalidSampleCount} || perf.Error;
+
+const perm_denied_msg = "perf counters unavailable (permission denied)" ++
+    if (builtin.os.tag == .linux)
+        ", try running with sudo or run 'sudo sysctl kernel.perf_event_paranoid=1' before"
+    else
+        ", try running with sudo";
 
 /// Benchmark a function by measuring its execution time and optional hardware perf counters.
 ///
@@ -115,7 +122,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
         const calibration_iters: u64 = 10_000;
         const groups = perf.groupCounters(opts.perf_counters) catch |err| {
             if (err == error.PermissionDenied) {
-                std.log.warn("perf counters unavailable (permission denied, try running with sudo)", .{});
+                std.log.warn(perm_denied_msg, .{});
                 break :perf_blk;
             }
             return err;
@@ -126,7 +133,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
 
             var perf_state = perf.PerfState.init(counters) catch |err| {
                 if (err == error.PermissionDenied) {
-                    std.log.warn("perf counters unavailable (permission denied, try running with sudo)", .{});
+                    std.log.warn(perm_denied_msg, .{});
                     break :perf_blk;
                 }
                 return err;
