@@ -181,7 +181,8 @@ pub const BackendState = struct {
         var buf: [buf_len]u64 = .{0} ** buf_len;
 
         const read_size = @sizeOf(u64) * (header_size + self.requested.len * entry_size);
-        const rc = linux.read(fd, @as([*]u8, @ptrCast(&buf))[0..read_size]);
+        const buf_ptr: [*]u8 = @ptrCast(&buf);
+        const rc = linux.read(fd, buf_ptr, read_size);
         if (linux.errno(rc) != .SUCCESS) return error.ReadFailed;
 
         if (buf[2] == 0) return result; // time_running == 0

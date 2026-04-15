@@ -23,6 +23,7 @@ jobs:
         run: zig build test --summary all
 
       - name: Check formatting
+        if: runner.os == 'Linux'
         run: zig fmt --check .
 
       - name: Run example

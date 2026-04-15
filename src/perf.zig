@@ -209,7 +209,10 @@ test "groupCounters: empty input returns empty groups" {
 test "groupCounters: single counter" {
     if (!has_backend) return error.SkipZigTest;
     const counters = [_]PerfCounter{.cycles};
-    const groups = try groupCounters(&counters);
+    const groups = groupCounters(&counters) catch |err| {
+        if (err == error.PermissionDenied or err == error.DatabaseLoadFailed) return error.SkipZigTest;
+        return err;
+    };
     try testing.expect(groups.len >= 1);
 
     var total: usize = 0;
@@ -222,7 +225,10 @@ test "groupCounters: default counters" {
     if (!has_backend) return error.SkipZigTest;
     if (default_counters.len == 0) return error.SkipZigTest;
 
-    const groups = try groupCounters(&default_counters);
+    const groups = groupCounters(&default_counters) catch |err| {
+        if (err == error.PermissionDenied or err == error.DatabaseLoadFailed) return error.SkipZigTest;
+        return err;
+    };
     try testing.expect(groups.len >= 1);
 
     var total: usize = 0;
@@ -235,7 +241,7 @@ test "groupCounters: all counters are assigned to groups" {
 
     const all = comptime std.enums.values(PerfCounter);
     const groups = groupCounters(all) catch |err| {
-        if (err == error.PermissionDenied) return error.SkipZigTest;
+        if (err == error.PermissionDenied or err == error.DatabaseLoadFailed) return error.SkipZigTest;
         return err;
     };
     try testing.expect(groups.len >= 1);

@@ -275,7 +275,7 @@ fn loadFrameworks() Error!void {
     }) |entry| {
         const ptr, const lib, const name = entry;
         const sym = std.c.dlsym(lib, name) orelse return error.SymbolLoadFailed;
-        ptr.* = @ptrCast(sym);
+        ptr.* = @ptrCast(@alignCast(sym));
     }
 
     frameworks_loaded = true;
