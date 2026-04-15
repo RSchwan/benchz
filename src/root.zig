@@ -194,7 +194,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
             for (counters) |counter| {
                 const base: f64 = @floatFromInt(baseline.get(counter) orelse continue);
                 const measure_oh: f64 = if (measure_overhead.get(counter)) |v| @floatFromInt(v) else 0;
-                const iter_f: f64 = @floatFromInt(iterations);
+                const iter_f: f64 = @floatFromInt(calibration_iters);
                 baseline_per_iter.set(counter, @max(0, (base - measure_oh) / iter_f));
             }
 
