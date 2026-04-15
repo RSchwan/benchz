@@ -8,6 +8,7 @@ pub const perf = @import("perf.zig");
 pub const PerfCounter = perf.PerfCounter;
 pub const PerfCounts = perf.PerfCounts;
 
+/// Configuration for a benchmark run.
 pub const Options = struct {
     unit: []const u8 = "op",
     clock: Clock = .awake,
@@ -19,6 +20,7 @@ pub const Options = struct {
     perf_counters: []const PerfCounter = &perf.default_counters,
 };
 
+/// Output of a benchmark run, including timing statistics and optional perf counter values.
 pub const Result = struct {
     name: []const u8,
     unit: []const u8,
@@ -37,6 +39,12 @@ pub const Result = struct {
 
 pub const Error = error{InvalidSampleCount} || perf.Error;
 
+/// Benchmark a function by measuring its execution time and optional hardware perf counters.
+///
+/// 1. Calibrates iteration count so total runtime meets `min_run_time`.
+/// 2. Collects timing samples, computing min/max/mean/median/stddev per iteration.
+/// 3. If perf counters are requested, calibrates measurement overhead and loop baseline,
+///    then measures the function and corrects for both.
 pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype, opts: Options) (Error || Allocator.Error)!Result {
     if (opts.samples == 0) return error.InvalidSampleCount;
 
@@ -57,7 +65,8 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
         min_run_time_ns = @max(min_run_time_ns, clock_resolution.toNanoseconds() * opts.clock_resolution_multiple);
     } else |_| {}
 
-    // Calibration: determine iteration count
+    // Calibration: increase iterations until total runtime exceeds min_run_time.
+    // Uses saturating multiply to avoid overflow when scaling up aggressively.
     var iterations = opts.min_iterations;
     var duration_ns: i96 = 0;
     while (true) {
@@ -128,7 +137,9 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
         max_ns = mean_ns;
     }
 
-    // Perf counter measurement
+    // Perf counter measurement — runs after timing samples so caches are warm.
+    // If more counters are requested than hardware supports, they are split into
+    // groups and measured in separate passes.
     var perf_counts = PerfCounts.initFill(null);
     if (opts.perf_counters.len > 0) perf_blk: {
         const calibration_iters: u64 = 10_000;
@@ -152,13 +163,13 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
             };
             defer perf_state.deinit();
 
-            // Calibrate: measurement overhead (empty readBefore/readAfterRaw), keeps lowest value.
+            // Calibrate: measurement overhead (empty readBefore/readAfter), keeps lowest value.
             var measure_overhead = perf.RawCounts.initFill(null);
             for (0..perf.calibration_runs) |_| {
                 try perf_state.readBefore();
-                try perf_state.readAfterRaw();
+                const raw = try perf_state.readAfter();
                 for (counters) |c| {
-                    const val = perf_state.raw_counts.get(c) orelse continue;
+                    const val = raw.get(c) orelse continue;
                     const cur = measure_overhead.get(c);
                     if (cur == null or val < cur.?) measure_overhead.set(c, val);
                 }
@@ -169,15 +180,16 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
             for (0..perf.calibration_runs) |_| {
                 try perf_state.readBefore();
                 try runIterations(calibration_iters, noop, .{});
-                try perf_state.readAfterRaw();
+                const raw = try perf_state.readAfter();
                 for (counters) |c| {
-                    const val = perf_state.raw_counts.get(c) orelse continue;
+                    const val = raw.get(c) orelse continue;
                     const cur = baseline.get(c);
                     if (cur == null or val < cur.?) baseline.set(c, val);
                 }
             }
 
-            // Per-iteration baseline for non-cycle counters.
+            // Per-iteration loop cost: (loop_baseline - measurement_overhead) / iterations.
+            // This isolates the cost of the loop machinery itself (branch, counter increment).
             var baseline_per_iter = PerfCounts.initFill(null);
             for (counters) |counter| {
                 const base: f64 = @floatFromInt(baseline.get(counter) orelse continue);
@@ -189,11 +201,11 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
             // Actual measurement (single pass).
             try perf_state.readBefore();
             try runIterations(iterations, func, params);
-            try perf_state.readAfterRaw();
+            const raw = try perf_state.readAfter();
 
             // Correct and compute per-iteration values.
             for (counters) |counter| {
-                const raw_val: f64 = @floatFromInt(perf_state.raw_counts.get(counter) orelse continue);
+                const raw_val: f64 = @floatFromInt(raw.get(counter) orelse continue);
                 const measure_oh: f64 = if (measure_overhead.get(counter)) |v| @floatFromInt(v) else 0;
                 const iter_f: f64 = @floatFromInt(iterations);
                 if (counter == .cycles) {
@@ -221,10 +233,12 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
     };
 }
 
+/// Trivial function used as the loop baseline during perf calibration.
 fn noop() u8 {
     return 0;
 }
 
+/// Compile-time validation that func is callable with the given args tuple.
 fn checkFuncAndArgs(comptime FuncType: type, comptime ArgsType: type) void {
     if (@typeInfo(unwrapPointerType(FuncType)) != .@"fn") {
         @compileError("func must be a function or function pointer, found '" ++ @typeName(FuncType) ++ "'");
@@ -249,6 +263,10 @@ fn unwrapPointerType(comptime T: type) type {
     return T;
 }
 
+/// Run the function for the given number of iterations.
+/// Must be noinline to ensure consistent code generation across all call sites —
+/// without this, the compiler may generate different loop code at each inline site,
+/// causing inconsistent perf counter readings between benchmarks.
 noinline fn runIterations(iterations: u64, func: anytype, args: anytype) !void {
     std.mem.doNotOptimizeAway(&args);
     for (0..iterations) |_| {
@@ -256,6 +274,7 @@ noinline fn runIterations(iterations: u64, func: anytype, args: anytype) !void {
     }
 }
 
+/// Call the function once, preventing the compiler from optimizing away the result.
 inline fn runFunc(func: anytype, args: anytype) !void {
     const FnType = unwrapPointerType(@TypeOf(func));
     const return_type = @typeInfo(FnType).@"fn".return_type.?;

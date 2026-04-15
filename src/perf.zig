@@ -1,4 +1,13 @@
 const std = @import("std");
+const builtin = @import("builtin");
+
+const has_backend = builtin.os.tag == .macos or builtin.os.tag == .linux;
+const backend = if (builtin.os.tag == .macos)
+    @import("perf_kpc.zig")
+else if (builtin.os.tag == .linux)
+    @import("perf_linux.zig")
+else
+    unreachable;
 
 pub const PerfCounter = enum {
     cycles,
@@ -12,9 +21,10 @@ pub const PerfCounter = enum {
     tlb_misses_l1i,
 };
 
+/// Per-iteration averaged counter values. Null if the counter was not measured.
 pub const PerfCounts = std.enums.EnumArray(PerfCounter, ?f64);
 
-/// Raw counter values (totals, not per-iteration).
+/// Raw counter values (totals, not per-iteration). Null if the counter was not measured.
 pub const RawCounts = std.enums.EnumArray(PerfCounter, ?u64);
 
 pub const Error = error{
@@ -39,15 +49,7 @@ pub const Error = error{
     ReadFailed,
 };
 
-const builtin = @import("builtin");
-const has_backend = builtin.os.tag == .macos or builtin.os.tag == .linux;
-const backend = if (builtin.os.tag == .macos)
-    @import("perf_kpc.zig")
-else if (builtin.os.tag == .linux)
-    @import("perf_linux.zig")
-else
-    unreachable;
-
+/// Counters measured by default. Empty on macOS since kpc requires root privileges.
 pub const default_counters = if (builtin.os.tag == .linux) [_]PerfCounter{
     .cycles,
     .instructions,
@@ -61,8 +63,12 @@ const max_groups = 8;
 /// Maximum number of counters in one group.
 const max_per_group = 16;
 
+/// Number of calibration iterations for measuring overhead and loop baseline.
 pub const calibration_runs = 100;
 
+/// Hardware PMU counter capacity, split by type.
+/// Fixed counters are hardwired to specific events (e.g. cycles, instructions).
+/// Configurable counters can be programmed to measure any supported event.
 pub const CounterLimits = struct {
     fixed: usize,
     configurable: usize,
@@ -81,6 +87,8 @@ pub fn isFixedCounter(counter: PerfCounter) Error!bool {
     };
 }
 
+/// A set of counters that can be measured simultaneously in a single pass.
+/// Limited by the number of physical PMU slots available.
 pub const CounterGroup = struct {
     counters: [max_per_group]PerfCounter = undefined,
     len: usize = 0,
@@ -90,6 +98,8 @@ pub const CounterGroup = struct {
     }
 };
 
+/// Collection of counter groups. When more counters are requested than hardware
+/// supports simultaneously, they are split across multiple groups (measurement passes).
 pub const CounterGroups = struct {
     groups: [max_groups]CounterGroup = .{CounterGroup{}} ** max_groups,
     len: usize = 0,
@@ -148,12 +158,15 @@ pub fn groupCounters(counters: []const PerfCounter) Error!CounterGroups {
     return result;
 }
 
+/// Platform-agnostic wrapper around the OS-specific perf backend.
+/// Manages the lifecycle of hardware counter configuration and provides
+/// readBefore/readAfter pairs for measuring counter deltas.
 pub const PerfState = struct {
     state: InnerState = .{},
-    raw_counts: RawCounts = RawCounts.initFill(null),
 
     const InnerState = if (has_backend) backend.BackendState else struct {};
 
+    /// Configure and start counting the requested counters.
     pub fn init(counters: []const PerfCounter) Error!PerfState {
         if (has_backend) {
             return .{ .state = try backend.BackendState.init(counters) };
@@ -162,18 +175,21 @@ pub const PerfState = struct {
         return .{};
     }
 
+    /// Stop counting and release hardware counters.
     pub fn deinit(self: *PerfState) void {
         if (has_backend) self.state.deinit();
     }
 
+    /// Snapshot counter values before the measured region.
     pub fn readBefore(self: *PerfState) Error!void {
         if (has_backend) try self.state.readBefore();
     }
 
-    /// Read counters and store raw totals (not per-iteration).
-    pub fn readAfterRaw(self: *PerfState) Error!void {
+    /// Read counters after the measured region and return raw deltas (totals, not per-iteration).
+    pub fn readAfter(self: *PerfState) Error!RawCounts {
         if (has_backend) {
-            self.raw_counts = try self.state.readAfterRaw();
+            return try self.state.readAfter();
         }
+        return RawCounts.initFill(null);
     }
 };

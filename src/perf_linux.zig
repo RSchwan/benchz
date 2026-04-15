@@ -1,3 +1,5 @@
+// Linux perf_event_open backend for hardware performance counters.
+
 const std = @import("std");
 const linux = std.os.linux;
 const p = @import("perf.zig");
@@ -5,6 +7,7 @@ const PerfCounter = p.PerfCounter;
 const RawCounts = p.RawCounts;
 const Error = p.Error;
 
+/// Maps to perf_event_attr.type + config fields.
 const PerfEventConfig = struct {
     type: linux.PERF.TYPE,
     config: u64,
@@ -14,6 +17,7 @@ fn hwEvent(hw: linux.PERF.COUNT.HW) PerfEventConfig {
     return .{ .type = .HARDWARE, .config = @intFromEnum(hw) };
 }
 
+/// Encode a HW_CACHE event: cache_id | (op << 8) | (result << 16).
 fn cacheEvent(
     cache_id: linux.PERF.COUNT.HW.CACHE,
     op: linux.PERF.COUNT.HW.CACHE.OP,
@@ -25,6 +29,7 @@ fn cacheEvent(
     };
 }
 
+/// Mapping from PerfCounter to perf_event_open config.
 const event_config = std.enums.EnumArray(PerfCounter, PerfEventConfig).init(.{
     .cycles = hwEvent(.CPU_CYCLES),
     .instructions = hwEvent(.INSTRUCTIONS),
@@ -89,11 +94,13 @@ fn probeCounterCapacity(event_type: linux.PERF.TYPE, config: u64) usize {
     return count;
 }
 
+/// Per-measurement-pass state. Opens perf events in a pinned group (no multiplexing).
 pub const BackendState = struct {
     fds: [MAX_COUNTERS]linux.fd_t = .{-1} ** MAX_COUNTERS,
     ids: [MAX_COUNTERS]u64 = .{0} ** MAX_COUNTERS,
     requested: []const PerfCounter = &.{},
 
+    /// Open a pinned event group for the requested counters.
     pub fn init(counters: []const PerfCounter) Error!BackendState {
         if (counters.len == 0) return .{};
         if (counters.len > MAX_COUNTERS) return error.TooManyCounters;
@@ -146,6 +153,7 @@ pub const BackendState = struct {
         }
     }
 
+    /// Reset and enable the event group.
     pub fn readBefore(self: *BackendState) Error!void {
         if (self.requested.len == 0) return;
         const fd = self.fds[0];
@@ -155,8 +163,8 @@ pub const BackendState = struct {
             return error.IoctlFailed;
     }
 
-    /// Read counters and return raw totals (not per-iteration).
-    pub fn readAfterRaw(self: *BackendState) Error!RawCounts {
+    /// Disable the group and read all counter values. Maps values back via event IDs.
+    pub fn readAfter(self: *BackendState) Error!RawCounts {
         var result = RawCounts.initFill(null);
         if (self.requested.len == 0) return result;
 

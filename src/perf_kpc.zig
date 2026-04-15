@@ -9,14 +9,17 @@ const PerfCounter = perf.PerfCounter;
 const RawCounts = perf.RawCounts;
 const Error = perf.Error;
 
+// KPC counter class indices and bitmasks used by kpc_set_counting, kpc_set_config, etc.
 const KPC_CLASS_FIXED: u32 = 0;
 const KPC_CLASS_CONFIGURABLE: u32 = 1;
 const KPC_CLASS_FIXED_MASK: u32 = 1 << KPC_CLASS_FIXED;
 const KPC_CLASS_CONFIGURABLE_MASK: u32 = 1 << KPC_CLASS_CONFIGURABLE;
 const KPC_MAX_COUNTERS: u32 = 32;
 
-/// Event names from /usr/share/kpep/<name>.plist
-/// Multiple names per counter for cross-architecture support (Apple Silicon vs Intel).
+/// Event names from /usr/share/kpep/<cpu>.plist, tried in order until one resolves.
+/// Multiple fallback names per counter for cross-architecture support (Apple Silicon vs Intel).
+/// Note: kpep_db_event does not resolve aliases (plist entries that map to a string),
+/// so we must list the actual event names, not their aliases.
 const event_names = std.enums.EnumArray(PerfCounter, []const [*:0]const u8).init(.{
     .cycles = &.{ "FIXED_CYCLES", "CPU_CLK_UNHALTED.THREAD", "CPU_CLK_UNHALTED.CORE" },
     .instructions = &.{ "FIXED_INSTRUCTIONS", "INST_RETIRED.ANY" },
@@ -29,12 +32,15 @@ const event_names = std.enums.EnumArray(PerfCounter, []const [*:0]const u8).init
     .tlb_misses_l1i = &.{ "L1I_TLB_MISS_DEMAND", "ITLB_MISSES.MISS_CAUSES_A_WALK", "ITLB_MISSES.WALK_COMPLETED" },
 });
 
+// Opaque types for kpep framework objects — we only interact with them via pointers.
 const KpepEvent = opaque {};
 const KpepDb = opaque {};
 const KpepConfig = opaque {};
 
+// Hardware register configuration value (one per configurable counter).
 const KpcConfigT = u64;
 
+/// Query how many fixed and configurable PMU counters the hardware supports.
 pub fn maxSimultaneousCounters() Error!perf.CounterLimits {
     try loadFrameworks();
     return .{
@@ -71,11 +77,18 @@ pub fn isFixedCounter(counter: perf.PerfCounter) Error!bool {
     return (classes & KPC_CLASS_FIXED_MASK) != 0;
 }
 
+/// Per-measurement-pass state for kpc counters.
+/// Created and destroyed for each counter group — kpc configuration is global kernel state,
+/// so we configure on init and tear down on deinit to avoid stale state between groups.
 pub const BackendState = struct {
+    /// Maps event index (0..N) to the hardware counter slot assigned by kpep.
     counter_map: [KPC_MAX_COUNTERS]usize = .{0} ** KPC_MAX_COUNTERS,
+    /// Snapshot of thread counters taken in readBefore.
     counters_before: [KPC_MAX_COUNTERS]u64 = .{0} ** KPC_MAX_COUNTERS,
     requested: []const PerfCounter = &.{},
 
+    /// Load the kpep database, configure the requested events, program the kernel,
+    /// and start counting. Requires root privileges (kpc_force_all_ctrs).
     pub fn init(counters: []const PerfCounter) Error!BackendState {
         if (counters.len == 0) return .{};
 
@@ -113,7 +126,10 @@ pub const BackendState = struct {
                 return error.EventAddFailed;
         }
 
-        // Get KPC configuration
+        // Extract KPC configuration from kpep:
+        // - classes: bitmask of which counter classes are needed (fixed/configurable)
+        // - counter_map: maps our event index to the hardware counter slot
+        // - regs: register values to program into configurable counters
         var classes: u32 = 0;
         var reg_count: usize = 0;
         var regs: [KPC_MAX_COUNTERS]KpcConfigT = .{0} ** KPC_MAX_COUNTERS;
@@ -126,7 +142,7 @@ pub const BackendState = struct {
         if (kpep_config_kpc.?(config.?, &regs, @sizeOf(@TypeOf(regs))) != 0)
             return error.ConfigQueryFailed;
 
-        // Apply config to kernel
+        // Apply config to kernel: claim exclusive counter access and program registers.
         if (kpc_force_all_ctrs_set.?(1) != 0)
             return error.KernelConfigFailed;
 
@@ -135,7 +151,7 @@ pub const BackendState = struct {
                 return error.KernelConfigFailed;
         }
 
-        // Start counting
+        // Enable counting globally and for this thread.
         if (kpc_set_counting.?(classes) != 0)
             return error.CountingStartFailed;
         if (kpc_set_thread_counting.?(classes) != 0)
@@ -144,6 +160,7 @@ pub const BackendState = struct {
         return state;
     }
 
+    /// Stop counting and release exclusive counter access.
     pub fn deinit(self: *BackendState) void {
         if (self.requested.len == 0) return;
 
@@ -154,14 +171,17 @@ pub const BackendState = struct {
         self.requested = &.{};
     }
 
+    /// Snapshot thread-local counter values before the measured region.
     pub fn readBefore(self: *BackendState) Error!void {
         if (self.requested.len == 0) return;
         if (kpc_get_thread_counters.?(0, KPC_MAX_COUNTERS, &self.counters_before) != 0)
             return error.CounterReadFailed;
     }
 
-    /// Read counters and return raw totals (not per-iteration).
-    pub fn readAfterRaw(self: *BackendState) Error!RawCounts {
+    /// Read thread-local counters and compute deltas since readBefore.
+    /// Uses wrapping subtraction to handle counter overflow.
+    /// The counter_map translates our event index to the hardware slot assigned by kpep.
+    pub fn readAfter(self: *BackendState) Error!RawCounts {
         var result = RawCounts.initFill(null);
         if (self.requested.len == 0) return result;
 
@@ -179,6 +199,7 @@ pub const BackendState = struct {
     }
 };
 
+/// Try each fallback name in order until kpep_db_event finds a match for this CPU.
 fn findEvent(db: *KpepDb, names: []const [*:0]const u8) ?*KpepEvent {
     for (names) |name| {
         var ev: ?*KpepEvent = null;
@@ -221,6 +242,8 @@ var kpep_config_kpc_count: ?*const fn (*KpepConfig, *usize) callconv(.c) c_int =
 var kpep_config_kpc_map: ?*const fn (*KpepConfig, [*]usize, usize) callconv(.c) c_int = null;
 var kpep_config_kpc: ?*const fn (*KpepConfig, [*]KpcConfigT, usize) callconv(.c) c_int = null;
 
+/// Load the private kperf and kperfdata frameworks via dlopen and resolve all
+/// function pointers via dlsym. Only runs once; subsequent calls are cached.
 fn loadFrameworks() Error!void {
     if (frameworks_loaded) return;
 
