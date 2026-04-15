@@ -41,12 +41,6 @@ pub const Result = struct {
 
 pub const Error = error{InvalidSampleCount} || perf.Error;
 
-const perm_denied_msg = "perf counters unavailable (permission denied)" ++
-    if (builtin.os.tag == .linux)
-        ", try running with sudo or run 'sudo sysctl kernel.perf_event_paranoid=1' before"
-    else
-        ", try running with sudo";
-
 /// Benchmark a function by measuring its execution time and optional hardware perf counters.
 ///
 /// 1. Calibrates iteration count so total runtime meets `min_run_time`.
@@ -121,22 +115,16 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
     if (opts.perf_counters.len > 0) perf_blk: {
         const calibration_iters: u64 = 10_000;
         const groups = perf.groupCounters(opts.perf_counters) catch |err| {
-            if (err == error.PermissionDenied) {
-                std.log.warn(perm_denied_msg, .{});
-                break :perf_blk;
-            }
-            return err;
+            warnPerfUnavailable(err);
+            break :perf_blk;
         };
 
         for (groups.slice()) |*group| {
             const counters = group.slice();
 
             var perf_state = perf.PerfState.init(counters) catch |err| {
-                if (err == error.PermissionDenied) {
-                    std.log.warn(perm_denied_msg, .{});
-                    break :perf_blk;
-                }
-                return err;
+                warnPerfUnavailable(err);
+                break :perf_blk;
             };
             defer perf_state.deinit();
 
@@ -238,6 +226,18 @@ fn checkFuncAndArgs(comptime FuncType: type, comptime ArgsType: type) void {
 fn unwrapPointerType(comptime T: type) type {
     if (@typeInfo(T) == .pointer) return @typeInfo(T).pointer.child;
     return T;
+}
+
+fn warnPerfUnavailable(err: perf.Error) void {
+    if (err == error.PermissionDenied) {
+        if (builtin.os.tag == .linux) {
+            std.log.warn("perf counters unavailable (permission denied), try running with sudo or 'sudo sysctl kernel.perf_event_paranoid=1'", .{});
+        } else {
+            std.log.warn("perf counters unavailable (permission denied), try running with sudo", .{});
+        }
+    } else {
+        std.log.warn("perf counters not available on this system ({s})", .{@errorName(err)});
+    }
 }
 
 /// Run the function for the given number of iterations.
