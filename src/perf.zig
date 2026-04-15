@@ -20,7 +20,7 @@ pub const RawCounts = std.enums.EnumArray(PerfCounter, ?u64);
 pub const Error = error{
     /// Performance counters are not supported on this platform.
     PerfUnsupported,
-    /// Insufficient privileges. Run with sudo or appropriate permissions.
+    /// Insufficient privileges.
     PermissionDenied,
     DatabaseLoadFailed,
     ConfigCreateFailed,
@@ -48,7 +48,7 @@ else if (builtin.os.tag == .linux)
 else
     unreachable;
 
-pub const default_counters = if (has_backend) [_]PerfCounter{
+pub const default_counters = if (builtin.os.tag == .linux) [_]PerfCounter{
     .cycles,
     .instructions,
     .branches,
@@ -62,6 +62,24 @@ const max_groups = 8;
 const max_per_group = 16;
 
 pub const calibration_runs = 100;
+
+pub const CounterLimits = struct {
+    fixed: usize,
+    configurable: usize,
+};
+
+/// Whether a counter uses a fixed hardware slot or a configurable PMU register.
+/// On macOS, this queries kpep for the actual mapping. On Linux, uses a heuristic.
+pub fn isFixedCounter(counter: PerfCounter) Error!bool {
+    if (builtin.os.tag == .macos) {
+        return backend.isFixedCounter(counter);
+    }
+    // Linux: cycles and instructions typically use fixed PMU slots.
+    return switch (counter) {
+        .cycles, .instructions => true,
+        else => false,
+    };
+}
 
 pub const CounterGroup = struct {
     counters: [max_per_group]PerfCounter = undefined,
@@ -82,6 +100,7 @@ pub const CounterGroups = struct {
 };
 
 /// Split counters into groups that fit hardware limits.
+/// Respects the separate fixed and configurable counter limits.
 pub fn groupCounters(counters: []const PerfCounter) Error!CounterGroups {
     if (counters.len == 0) return .{};
     if (!has_backend) {
@@ -89,21 +108,43 @@ pub fn groupCounters(counters: []const PerfCounter) Error!CounterGroups {
         return .{};
     }
 
-    const max = try backend.maxSimultaneousCounters();
+    const limits = try backend.maxSimultaneousCounters();
 
     var result = CounterGroups{};
-    var i: usize = 0;
-    while (i < counters.len) {
-        const group_size = @min(max, counters.len - i);
-        var group = CounterGroup{};
-        for (0..group_size) |j| {
-            group.counters[j] = counters[i + j];
+    var group = CounterGroup{};
+    var fixed_used: usize = 0;
+    var config_used: usize = 0;
+
+    for (counters) |counter| {
+        const is_fixed = try isFixedCounter(counter);
+        const would_exceed = if (is_fixed)
+            fixed_used >= limits.fixed
+        else
+            config_used >= limits.configurable;
+
+        if (would_exceed and group.len > 0) {
+            // Current group is full for this counter type, start a new group.
+            result.groups[result.len] = group;
+            result.len += 1;
+            group = CounterGroup{};
+            fixed_used = 0;
+            config_used = 0;
         }
-        group.len = group_size;
+
+        group.counters[group.len] = counter;
+        group.len += 1;
+        if (is_fixed) {
+            fixed_used += 1;
+        } else {
+            config_used += 1;
+        }
+    }
+
+    if (group.len > 0) {
         result.groups[result.len] = group;
         result.len += 1;
-        i += group_size;
     }
+
     return result;
 }
 

@@ -96,7 +96,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
             durations_ns[i] = start.durationTo(end).toNanoseconds();
         }
 
-        std.mem.sort(i96, durations_ns, {}, std.sort.asc(i96));
+        std.mem.sortUnstable(i96, durations_ns, {}, std.sort.asc(i96));
 
         var durations_sum: i96 = 0;
         for (durations_ns) |duration| durations_sum += duration;
@@ -117,23 +117,24 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
             sum += diff * diff;
         }
         std_ns = @sqrt(sum / @as(f64, @floatFromInt(opts.samples - 1)));
+
         min_ns = @as(f64, @floatFromInt(durations_ns[0])) / @as(f64, @floatFromInt(iterations));
         max_ns = @as(f64, @floatFromInt(durations_ns[opts.samples - 1])) / @as(f64, @floatFromInt(iterations));
     } else {
         mean_ns = @as(f64, @floatFromInt(duration_ns)) / @as(f64, @floatFromInt(iterations));
-        min_ns = mean_ns;
-        max_ns = mean_ns;
         median_ns = mean_ns;
         std_ns = 0;
+        min_ns = mean_ns;
+        max_ns = mean_ns;
     }
 
-    // Perf counter measurement (after timing samples so caches are warm).
+    // Perf counter measurement
     var perf_counts = PerfCounts.initFill(null);
     if (opts.perf_counters.len > 0) perf_blk: {
         const calibration_iters: u64 = 10_000;
         const groups = perf.groupCounters(opts.perf_counters) catch |err| {
             if (err == error.PermissionDenied) {
-                std.debug.print("warning: perf counters unavailable (permission denied, try running with sudo)\n", .{});
+                std.log.warn("perf counters unavailable (permission denied, try running with sudo)", .{});
                 break :perf_blk;
             }
             return err;
@@ -144,14 +145,14 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
 
             var perf_state = perf.PerfState.init(counters) catch |err| {
                 if (err == error.PermissionDenied) {
-                    std.debug.print("warning: perf counters unavailable (permission denied, try running with sudo)\n", .{});
+                    std.log.warn("perf counters unavailable (permission denied, try running with sudo)", .{});
                     break :perf_blk;
                 }
                 return err;
             };
             defer perf_state.deinit();
 
-            // Calibrate: measurement overhead (empty readBefore/readAfterRaw).
+            // Calibrate: measurement overhead (empty readBefore/readAfterRaw), keeps lowest value.
             var measure_overhead = perf.RawCounts.initFill(null);
             for (0..perf.calibration_runs) |_| {
                 try perf_state.readBefore();
@@ -163,7 +164,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
                 }
             }
 
-            // Calibrate: loop baseline (noop loop with fixed iteration count).
+            // Calibrate: loop baseline (noop loop with fixed iteration count), keeps lowest value.
             var baseline = perf.RawCounts.initFill(null);
             for (0..perf.calibration_runs) |_| {
                 try perf_state.readBefore();
@@ -178,11 +179,11 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
 
             // Per-iteration baseline for non-cycle counters.
             var baseline_per_iter = PerfCounts.initFill(null);
-            const cal_f: f64 = @floatFromInt(calibration_iters);
-            for (counters) |c| {
-                const base: f64 = @floatFromInt(baseline.get(c) orelse continue);
-                const oh: f64 = if (measure_overhead.get(c)) |v| @floatFromInt(v) else 0;
-                baseline_per_iter.set(c, @max(0, (base - oh) / cal_f));
+            for (counters) |counter| {
+                const base: f64 = @floatFromInt(baseline.get(counter) orelse continue);
+                const measure_oh: f64 = if (measure_overhead.get(counter)) |v| @floatFromInt(v) else 0;
+                const iter_f: f64 = @floatFromInt(iterations);
+                baseline_per_iter.set(counter, @max(0, (base - measure_oh) / iter_f));
             }
 
             // Actual measurement (single pass).
@@ -191,15 +192,16 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
             try perf_state.readAfterRaw();
 
             // Correct and compute per-iteration values.
-            const iter_f: f64 = @floatFromInt(iterations);
             for (counters) |counter| {
                 const raw_val: f64 = @floatFromInt(perf_state.raw_counts.get(counter) orelse continue);
-                const oh: f64 = if (measure_overhead.get(counter)) |v| @floatFromInt(v) else 0;
+                const measure_oh: f64 = if (measure_overhead.get(counter)) |v| @floatFromInt(v) else 0;
+                const iter_f: f64 = @floatFromInt(iterations);
                 if (counter == .cycles) {
-                    perf_counts.set(counter, @max(0, (raw_val - oh) / iter_f));
+                    // Don't correct loop overhead for cycles, because the CPU pipelines the loop overhead into the function execution
+                    perf_counts.set(counter, @max(0, (raw_val - measure_oh) / iter_f));
                 } else {
                     const loop_oh = baseline_per_iter.get(counter) orelse 0;
-                    perf_counts.set(counter, @max(0, (raw_val - oh) / iter_f - loop_oh));
+                    perf_counts.set(counter, @max(0, (raw_val - measure_oh) / iter_f - loop_oh));
                 }
             }
         }

@@ -1,3 +1,8 @@
+// macOS kpc/kperf backend for hardware performance counters.
+// Based on:
+//   https://gist.github.com/ibireme/173517c208c7dc333ba962c1f0d67d12
+//   https://github.com/tmcgilchrist/mperf
+
 const std = @import("std");
 const perf = @import("perf.zig");
 const PerfCounter = perf.PerfCounter;
@@ -17,11 +22,11 @@ const event_names = std.enums.EnumArray(PerfCounter, []const [*:0]const u8).init
     .instructions = &.{ "FIXED_INSTRUCTIONS", "INST_RETIRED.ANY" },
     .branches = &.{ "INST_BRANCH", "BR_INST_RETIRED.ALL_BRANCHES" },
     .branch_misses = &.{ "BRANCH_MISPRED_NONSPEC", "BRANCH_MISPREDICT", "BR_MISP_RETIRED.ALL_BRANCHES" },
-    .cache_misses_l1d = &.{ "L1D_CACHE_MISS_LD_NONSPEC", "L1D_CACHE_MISS_LD", "L1D.REPLACEMENT" },
-    .cache_misses_l1i = &.{ "L1I_CACHE_MISS_DEMAND", "ICACHE.MISSES" },
-    .cache_misses_llc = &.{ "L2_CACHE_MISS_DATA", "LONGEST_LAT_CACHE.MISS", "MEM_LOAD_RETIRED.L3_MISS" },
-    .tlb_misses_l1d = &.{ "L1D_TLB_MISS", "L1D_TLB_MISS_NONSPEC", "DTLB_LOAD_MISSES.MISS_CAUSES_A_WALK" },
-    .tlb_misses_l1i = &.{ "L1I_TLB_MISS_DEMAND", "ITLB_MISSES.MISS_CAUSES_A_WALK" },
+    .cache_misses_l1d = &.{ "L1D_CACHE_MISS_LD_NONSPEC", "L1D_CACHE_MISS_LD", "MEM_LOAD_RETIRED.L1_MISS", "L1D.REPLACEMENT" },
+    .cache_misses_l1i = &.{ "L1I_CACHE_MISS_DEMAND", "ICACHE_64B.IFTAG_MISS", "ICACHE.MISSES" },
+    .cache_misses_llc = &.{ "L2_CACHE_MISS_DATA", "MEM_LOAD_RETIRED.L3_MISS", "LONGEST_LAT_CACHE.MISS" },
+    .tlb_misses_l1d = &.{ "L1D_TLB_MISS_NONSPEC", "L1D_TLB_MISS", "DTLB_LOAD_MISSES.MISS_CAUSES_A_WALK", "DTLB_LOAD_MISSES.WALK_COMPLETED", "DTLB_LOAD_MISSES.DEMAND_LD_MISS_CAUSES_A_WALK" },
+    .tlb_misses_l1i = &.{ "L1I_TLB_MISS_DEMAND", "ITLB_MISSES.MISS_CAUSES_A_WALK", "ITLB_MISSES.WALK_COMPLETED" },
 });
 
 const KpepEvent = opaque {};
@@ -30,11 +35,40 @@ const KpepConfig = opaque {};
 
 const KpcConfigT = u64;
 
-pub fn maxSimultaneousCounters() Error!usize {
+pub fn maxSimultaneousCounters() Error!perf.CounterLimits {
     try loadFrameworks();
-    const fixed = kpc_get_counter_count.?(KPC_CLASS_FIXED_MASK);
-    const configurable = kpc_get_counter_count.?(KPC_CLASS_CONFIGURABLE_MASK);
-    return fixed + configurable;
+    return .{
+        .fixed = kpc_get_counter_count.?(KPC_CLASS_FIXED_MASK),
+        .configurable = kpc_get_counter_count.?(KPC_CLASS_CONFIGURABLE_MASK),
+    };
+}
+
+/// Determine whether a counter maps to a fixed or configurable PMU slot
+/// by creating a temporary kpep config and checking the resulting class.
+pub fn isFixedCounter(counter: perf.PerfCounter) Error!bool {
+    try loadFrameworks();
+
+    var db: ?*KpepDb = null;
+    if (kpep_db_create.?(null, &db) != 0)
+        return error.DatabaseLoadFailed;
+    defer kpep_db_free.?(db.?);
+
+    var config: ?*KpepConfig = null;
+    if (kpep_config_create.?(db.?, &config) != 0)
+        return error.ConfigCreateFailed;
+    defer kpep_config_free.?(config.?);
+
+    const names = event_names.get(counter);
+    var ev = findEvent(db.?, names) orelse
+        return error.EventNotFound;
+    if (kpep_config_add_event.?(config.?, @ptrCast(&ev), 0, null) != 0)
+        return error.EventAddFailed;
+
+    var classes: u32 = 0;
+    if (kpep_config_kpc_classes.?(config.?, &classes) != 0)
+        return error.ConfigQueryFailed;
+
+    return (classes & KPC_CLASS_FIXED_MASK) != 0;
 }
 
 pub const BackendState = struct {
@@ -59,11 +93,13 @@ pub const BackendState = struct {
         var db: ?*KpepDb = null;
         if (kpep_db_create.?(null, &db) != 0)
             return error.DatabaseLoadFailed;
+        defer kpep_db_free.?(db.?);
 
         // Create config
         var config: ?*KpepConfig = null;
         if (kpep_config_create.?(db.?, &config) != 0)
             return error.ConfigCreateFailed;
+        defer kpep_config_free.?(config.?);
 
         if (kpep_config_force_counters.?(config.?) != 0)
             return error.ConfigForceFailed;

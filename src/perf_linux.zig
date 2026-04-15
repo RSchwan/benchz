@@ -45,10 +45,19 @@ const PERF_FORMAT_GROUP = 1 << 3;
 const MAX_COUNTERS = 16;
 
 /// Query the number of hardware performance counters available.
-/// Uses perf_event_open probing: open events one by one until the kernel refuses.
-pub fn maxSimultaneousCounters() Error!usize {
-    // Try opening incrementing numbers of CPU_CYCLES events in a group.
-    // When the kernel can't schedule them all, it will reject.
+/// Probes fixed and configurable (general-purpose) counters separately.
+pub fn maxSimultaneousCounters() Error!p.CounterLimits {
+    return .{
+        .fixed = probeCounterCapacity(.HARDWARE, @intFromEnum(linux.PERF.COUNT.HW.CPU_CYCLES)),
+        .configurable = probeCounterCapacity(.HARDWARE, @intFromEnum(linux.PERF.COUNT.HW.BRANCH_INSTRUCTIONS)),
+    };
+}
+
+/// Discover how many PMU counters of a given type the hardware supports by
+/// opening pinned events in a group until the kernel refuses.
+/// Pinned events must be scheduled on real hardware — no multiplexing — so
+/// the kernel rejects the open once all physical PMU slots are occupied.
+fn probeCounterCapacity(event_type: linux.PERF.TYPE, config: u64) usize {
     var fds: [MAX_COUNTERS]linux.fd_t = .{-1} ** MAX_COUNTERS;
     defer for (&fds) |*fd| {
         if (fd.* != -1) _ = linux.close(fd.*);
@@ -59,22 +68,24 @@ pub fn maxSimultaneousCounters() Error!usize {
 
     for (0..MAX_COUNTERS) |i| {
         var attr = std.mem.zeroes(linux.perf_event_attr);
-        attr.type = .HARDWARE;
-        attr.config = @intFromEnum(linux.PERF.COUNT.HW.CPU_CYCLES);
+        attr.type = event_type;
+        attr.config = config;
+        // The first event creates the group: it starts disabled and is pinned.
+        // Subsequent events join the existing group (via group_fd).
         attr.flags.disabled = (group_fd == -1);
         attr.flags.exclude_kernel = true;
         attr.flags.exclude_hv = true;
-        // Pin to avoid multiplexing — fail if hardware can't schedule
         attr.flags.pinned = (group_fd == -1);
 
+        // pid=0: current thread, cpu=-1: any cpu, group_fd: -1 for leader
         const rc = linux.perf_event_open(&attr, 0, -1, group_fd, 0);
+        // Kernel returns an error when no more PMU slots are available.
         if (linux.errno(rc) != .SUCCESS) break;
         fds[i] = @intCast(rc);
         if (group_fd == -1) group_fd = fds[i];
         count += 1;
     }
 
-    if (count == 0) return error.OpenFailed;
     return count;
 }
 
@@ -116,7 +127,7 @@ pub const BackendState = struct {
 
             // Get event ID
             var id: u64 = 0;
-            const irc = linux.ioctl(state.fds[i], linux.IOCTL.IOR('$', 7, u64), @intFromPtr(&id));
+            const irc = linux.ioctl(state.fds[i], linux.PERF.EVENT_IOC.ID, @intFromPtr(&id));
             if (linux.errno(irc) != .SUCCESS) return error.IoctlFailed;
             state.ids[i] = id;
 

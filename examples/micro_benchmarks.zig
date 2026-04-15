@@ -35,7 +35,17 @@ pub fn main(init: std.process.Init) !void {
     const noopResult = try benchz.run(allocator, "noop", noop, .{}, .{});
     const addResult = try benchz.run(allocator, "add", add, .{ 1, 2 }, .{});
     const powerNaiveResult = try benchz.run(allocator, "powerNaive(2, 60)", powerNaive, .{ 2, 60 }, .{});
-    const powerFastResult = try benchz.run(allocator, "powerFast(2, 60)", powerFast, .{ 2, 60 }, .{});
+    const powerFastResult = try benchz.run(allocator, "powerFast(2, 60)", powerFast, .{ 2, 60 }, .{ .perf_counters = &.{
+        .cycles,
+        .branches,
+        .instructions,
+        .branch_misses,
+        .cache_misses_l1d,
+        .cache_misses_l1i,
+        .cache_misses_llc,
+        .tlb_misses_l1d,
+        .tlb_misses_l1i,
+    } });
 
     const results = [_]benchz.Result{ noopResult, addResult, powerNaiveResult, powerFastResult };
 
