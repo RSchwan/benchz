@@ -193,3 +193,125 @@ pub const PerfState = struct {
         return RawCounts.initFill(null);
     }
 };
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "groupCounters: empty input returns empty groups" {
+    const groups = try groupCounters(&.{});
+    try testing.expectEqual(@as(usize, 0), groups.len);
+    try testing.expectEqual(@as(usize, 0), groups.slice().len);
+}
+
+test "groupCounters: single counter" {
+    if (!has_backend) return error.SkipZigTest;
+    const counters = [_]PerfCounter{.cycles};
+    const groups = try groupCounters(&counters);
+    try testing.expect(groups.len >= 1);
+
+    var total: usize = 0;
+    for (groups.slice()) |g| total += g.slice().len;
+    try testing.expectEqual(@as(usize, 1), total);
+    try testing.expectEqual(PerfCounter.cycles, groups.groups[0].counters[0]);
+}
+
+test "groupCounters: default counters" {
+    if (!has_backend) return error.SkipZigTest;
+    if (default_counters.len == 0) return error.SkipZigTest;
+
+    const groups = try groupCounters(&default_counters);
+    try testing.expect(groups.len >= 1);
+
+    var total: usize = 0;
+    for (groups.slice()) |g| total += g.slice().len;
+    try testing.expectEqual(default_counters.len, total);
+}
+
+test "groupCounters: all counters are assigned to groups" {
+    if (!has_backend) return error.SkipZigTest;
+
+    const all = comptime std.enums.values(PerfCounter);
+    const groups = groupCounters(all) catch |err| {
+        if (err == error.PermissionDenied) return error.SkipZigTest;
+        return err;
+    };
+    try testing.expect(groups.len >= 1);
+
+    var total: usize = 0;
+    for (groups.slice()) |g| {
+        try testing.expect(g.slice().len > 0);
+        total += g.slice().len;
+    }
+    try testing.expectEqual(all.len, total);
+}
+
+test "CounterGroup.slice matches len" {
+    var g = CounterGroup{};
+    try testing.expectEqual(@as(usize, 0), g.slice().len);
+
+    g.counters[0] = .cycles;
+    g.counters[1] = .instructions;
+    g.len = 2;
+    try testing.expectEqual(@as(usize, 2), g.slice().len);
+    try testing.expectEqual(PerfCounter.cycles, g.slice()[0]);
+    try testing.expectEqual(PerfCounter.instructions, g.slice()[1]);
+}
+
+test "CounterGroups.slice matches len" {
+    var gs = CounterGroups{};
+    try testing.expectEqual(@as(usize, 0), gs.slice().len);
+
+    gs.groups[0].counters[0] = .cycles;
+    gs.groups[0].len = 1;
+    gs.groups[1].counters[0] = .branches;
+    gs.groups[1].len = 1;
+    gs.len = 2;
+    try testing.expectEqual(@as(usize, 2), gs.slice().len);
+}
+
+test "isFixedCounter: linux heuristic" {
+    if (builtin.os.tag != .linux) return error.SkipZigTest;
+
+    try testing.expect(try isFixedCounter(.cycles));
+    try testing.expect(try isFixedCounter(.instructions));
+    try testing.expect(!try isFixedCounter(.branches));
+    try testing.expect(!try isFixedCounter(.branch_misses));
+    try testing.expect(!try isFixedCounter(.cache_misses_l1d));
+}
+
+test "isFixedCounter: macos queries kpep" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+
+    // Just verify it doesn't error out — the fixed/configurable classification
+    // depends on the CPU, so we don't assert specific values.
+    _ = isFixedCounter(.cycles) catch |err| {
+        if (err == error.FrameworkLoadFailed or err == error.DatabaseLoadFailed or err == error.EventNotFound) return error.SkipZigTest;
+        return err;
+    };
+}
+
+test "PerfState: init/readBefore/readAfter/deinit round-trip" {
+    if (!has_backend) return error.SkipZigTest;
+
+    const counters = [_]PerfCounter{.cycles};
+    var state = PerfState.init(&counters) catch |err| {
+        if (err == error.PermissionDenied) return error.SkipZigTest;
+        return err;
+    };
+    defer state.deinit();
+
+    try state.readBefore();
+
+    // Do some work so counters are non-zero.
+    var sum: u64 = 0;
+    for (0..10_000) |i| sum +%= i;
+    std.mem.doNotOptimizeAway(sum);
+
+    const raw = try state.readAfter();
+    const cycles = raw.get(.cycles);
+    try testing.expect(cycles != null);
+    try testing.expect(cycles.? > 0);
+}
