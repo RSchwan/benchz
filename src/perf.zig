@@ -49,7 +49,6 @@ pub const Error = error{
     ReadFailed,
 };
 
-
 /// Maximum number of counter groups (each group is one measurement pass).
 const max_groups = 8;
 
@@ -222,8 +221,6 @@ test "groupCounters: single counter" {
     try testing.expectEqual(@as(usize, 1), total);
     try testing.expectEqual(PerfCounter.cycles, groups.groups[0].counters[0]);
 }
-
-
 
 test "groupCounters: all counters are assigned to groups" {
     if (!has_backend) return error.SkipZigTest;
