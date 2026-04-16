@@ -48,8 +48,8 @@ fn fibIterative(n: u32) u64 {
 
 fn sequentialScan(buf: []const u8) u8 {
     var sum: u8 = 0;
-    for (buf[0..4096]) |b| {
-        sum +%= b;
+    for (buf[0..4096]) |byte| {
+        sum +%= byte;
     }
     return sum;
 }
@@ -91,49 +91,43 @@ fn buildChain(allocator: std.mem.Allocator, len: u32) ![]u32 {
     return chain;
 }
 
-fn printResults(results: []const benchz.Result) void {
-    for (results) |result| {
-        std.debug.print("{s}: {d:.2} ns/op ± {d:.2} ({} iterations)\n", .{ result.name, result.mean_ns, result.std_ns, result.iterations });
-
-        inline for (@typeInfo(benchz.PerfCounter).@"enum".fields) |field| {
-            const counter: benchz.PerfCounter = @enumFromInt(field.value);
-            if (result.perf.get(counter)) |value| {
-                std.debug.print("  {s}: {d:.2}\n", .{ field.name, value });
-            }
-        }
-    }
-}
-
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
 
-    const opts: benchz.Options = .{ .perf_counters = &.{
-        .cycles,
-        .branches,
-        .instructions,
-        .branch_misses,
-        .cache_misses_l1d,
-        .cache_misses_l1i,
-        .cache_misses_llc,
-        .tlb_misses_l1d,
-        .tlb_misses_l1i,
-    } };
+    const opts: benchz.Options = .{
+        .perf_counters = &.{
+            .cycles,
+            .instructions,
+            .branches,
+            .branch_misses,
+            // .cache_misses_l1d,
+            // .cache_misses_l1i,
+            // .cache_misses_llc,
+            // .tlb_misses_l1d,
+            // .tlb_misses_l1i,
+        },
+    };
+
+    // Stream results as markdown to stdout
+    var stdout_buffer: [4096]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    var md = benchz.Markdown.init(&stdout_writer.interface);
+    var report = benchz.Report.initWithWriter(allocator, &md.writer);
+    defer report.deinit();
 
     // --- Arithmetic benchmarks ---
-    std.debug.print("=== Arithmetic ===\n", .{});
-    const arith_results = [_]benchz.Result{
-        try benchz.run(allocator, "noop", noop, .{}, opts),
-        try benchz.run(allocator, "add", add, .{ 1, 2 }, opts),
-        try benchz.run(allocator, "powerNaive(2, 60)", powerNaive, .{ 2, 60 }, opts),
-        try benchz.run(allocator, "powerFast(2, 60)", powerFast, .{ 2, 60 }, opts),
-        try benchz.run(allocator, "fibRecursive(10)", fibRecursive, .{10}, opts),
-        try benchz.run(allocator, "fibIterative(10)", fibIterative, .{10}, opts),
-    };
-    printResults(&arith_results);
+    const arith = try report.addGroup("Arithmetic");
+    try arith.addBaseline(try benchz.run(allocator, "noop", noop, .{}, opts));
+    try arith.add(try benchz.run(allocator, "add", add, .{ 1, 2 }, opts));
+    try arith.add(try benchz.run(allocator, "powerNaive(2, 60)", powerNaive, .{ 2, 60 }, opts));
+    try arith.add(try benchz.run(allocator, "powerFast(2, 60)", powerFast, .{ 2, 60 }, opts));
+
+    // --- Fibonacci comparison ---
+    const fib = try report.addGroup("Fibonacci(10)");
+    try fib.addBaseline(try benchz.run(allocator, "fibRecursive", fibRecursive, .{10}, opts));
+    try fib.add(try benchz.run(allocator, "fibIterative", fibIterative, .{10}, opts));
 
     // --- Memory benchmarks ---
-    std.debug.print("\n=== Memory ===\n", .{});
-
     // 64MB buffer for cache/TLB tests (well beyond L1/L2/LLC)
     const buf_size = 64 * 1024 * 1024;
     const buf = try allocator.alloc(u8, buf_size);
@@ -145,10 +139,11 @@ pub fn main(init: std.process.Init) !void {
     const chain = try buildChain(allocator, chain_len);
     defer allocator.free(chain);
 
-    const mem_results = [_]benchz.Result{
-        try benchz.run(allocator, "sequentialScan(64MB)", sequentialScan, .{buf}, opts),
-        try benchz.run(allocator, "pointerChase(64MB)", pointerChase, .{chain}, opts),
-        try benchz.run(allocator, "tlbThrash(64MB)", tlbThrash, .{buf}, opts),
-    };
-    printResults(&mem_results);
+    const mem = try report.addGroup("Memory (64MB)");
+    try mem.addBaseline(try benchz.run(allocator, "sequentialScan", sequentialScan, .{buf}, opts));
+    try mem.add(try benchz.run(allocator, "pointerChase", pointerChase, .{chain}, opts));
+    try mem.add(try benchz.run(allocator, "tlbThrash", tlbThrash, .{buf}, opts));
+
+    try report.finish();
+    try stdout_writer.flush();
 }

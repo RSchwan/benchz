@@ -7,12 +7,15 @@ const Duration = std.Io.Duration;
 
 pub const perf = @import("perf.zig");
 pub const stats = @import("stats.zig");
+pub const Result = @import("result.zig");
+pub const Writer = @import("writer.zig");
+pub const Report = @import("report.zig");
+pub const Markdown = @import("writers/markdown.zig");
 pub const PerfCounter = perf.PerfCounter;
 pub const PerfCounts = perf.PerfCounts;
 
 /// Configuration for a benchmark run.
 pub const Options = struct {
-    unit: []const u8 = "op",
     clock: Clock = .awake,
     clock_resolution_multiple: u32 = 1000,
     min_run_time: Duration = Duration.fromMilliseconds(1),
@@ -20,23 +23,6 @@ pub const Options = struct {
     max_iterations: u64 = 10_000_000,
     samples: u64 = 11,
     perf_counters: []const PerfCounter = &perf.default_counters,
-};
-
-/// Output of a benchmark run, including timing statistics and optional perf counter values.
-pub const Result = struct {
-    name: []const u8,
-    unit: []const u8,
-
-    iterations: u64,
-    samples: u64,
-
-    min_ns: f64,
-    max_ns: f64,
-    mean_ns: f64,
-    median_ns: f64,
-    std_ns: f64,
-
-    perf: PerfCounts = PerfCounts.initFill(null),
 };
 
 pub const Error = error{InvalidSampleCount} || perf.Error;
@@ -186,7 +172,6 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
 
     return .{
         .name = name,
-        .unit = opts.unit,
         .iterations = iterations,
         .samples = opts.samples,
         .min_ns = min_ns,
@@ -420,4 +405,7 @@ test "run: respects max_iterations" {
 test {
     _ = perf;
     _ = stats;
+    _ = Writer;
+    _ = Report;
+    _ = Markdown;
 }
