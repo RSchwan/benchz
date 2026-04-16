@@ -11,6 +11,8 @@ pub const Result = @import("result.zig");
 pub const Writer = @import("writer.zig");
 pub const Report = @import("report.zig");
 pub const Markdown = @import("writers/markdown.zig");
+pub const Csv = @import("writers/csv.zig");
+pub const Json = @import("writers/json.zig");
 pub const PerfCounter = perf.PerfCounter;
 pub const PerfCounts = perf.PerfCounts;
 
@@ -408,4 +410,6 @@ test {
     _ = Writer;
     _ = Report;
     _ = Markdown;
+    _ = Csv;
+    _ = Json;
 }
