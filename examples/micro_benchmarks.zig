@@ -117,7 +117,7 @@ pub fn main(init: std.process.Init) !void {
 
     // --- Arithmetic benchmarks ---
     const arith = try report.addGroup("Arithmetic");
-    try arith.addBaseline(try benchz.run(allocator, "noop", noop, .{}, opts));
+    try arith.add(try benchz.run(allocator, "noop", noop, .{}, opts));
     try arith.add(try benchz.run(allocator, "add", add, .{ 1, 2 }, opts));
     try arith.add(try benchz.run(allocator, "powerNaive(2, 60)", powerNaive, .{ 2, 60 }, opts));
     try arith.add(try benchz.run(allocator, "powerFast(2, 60)", powerFast, .{ 2, 60 }, opts));
