@@ -244,6 +244,16 @@ const opts: benchz.Options = .{
 };
 ```
 
+## Acknowledgments
+
+This project has been inspired by:
+
+- [bench](https://github.com/pyk/bench) — Zig benchmarking library
+- [nanobench](https://github.com/martinus/nanobench) — C++ micro-benchmarking with perf counter support
+- [Google Benchmark](https://github.com/google/benchmark) — C++ benchmarking framework
+- [ibireme's kpc demo](https://gist.github.com/ibireme/173517c208c7dc333ba962c1f0d67d12) — Apple Silicon performance counter access via kpc/kperf
+- [mperf](https://github.com/tmcgilchrist/mperf) — macOS performance counter library
+
 ## License
 
 MIT
