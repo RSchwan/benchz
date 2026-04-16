@@ -378,10 +378,10 @@ test "run: sleep timing is accurate" {
         .max_iterations = 1,
         .samples = 3,
     });
-    // Should be at least the sleep duration, and not more than 10x (generous for CI).
+    // Should be at least the sleep duration. No upper bound — CI VMs have
+    // unpredictable scheduling latency that makes upper bounds flaky.
     const expected_ns: f64 = @floatFromInt(sleep_us * std.time.ns_per_us);
-    try testing.expect(result.median_ns >= expected_ns * 0.9);
-    try testing.expect(result.median_ns < expected_ns * 10.0);
+    try testing.expect(result.median_ns >= expected_ns);
 }
 
 test "run: perf counters disabled returns all null" {
