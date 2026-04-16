@@ -49,13 +49,6 @@ pub const Error = error{
     ReadFailed,
 };
 
-/// Counters measured by default. Empty on macOS since kpc requires root privileges.
-pub const default_counters = if (builtin.os.tag == .linux) [_]PerfCounter{
-    .cycles,
-    .instructions,
-    .branches,
-    .branch_misses,
-} else [_]PerfCounter{};
 
 /// Maximum number of counter groups (each group is one measurement pass).
 const max_groups = 8;
@@ -230,20 +223,7 @@ test "groupCounters: single counter" {
     try testing.expectEqual(PerfCounter.cycles, groups.groups[0].counters[0]);
 }
 
-test "groupCounters: default counters" {
-    if (!has_backend) return error.SkipZigTest;
-    if (default_counters.len == 0) return error.SkipZigTest;
 
-    const groups = groupCounters(&default_counters) catch |err| {
-        if (err == error.PermissionDenied or err == error.DatabaseLoadFailed) return error.SkipZigTest;
-        return err;
-    };
-    try testing.expect(groups.len >= 1);
-
-    var total: usize = 0;
-    for (groups.slice()) |g| total += g.slice().len;
-    try testing.expectEqual(default_counters.len, total);
-}
 
 test "groupCounters: all counters are assigned to groups" {
     if (!has_backend) return error.SkipZigTest;

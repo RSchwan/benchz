@@ -24,7 +24,7 @@ pub const Options = struct {
     min_iterations: u64 = 1,
     max_iterations: u64 = 10_000_000,
     samples: u64 = 11,
-    perf_counters: []const PerfCounter = &perf.default_counters,
+    perf_counters: []const PerfCounter = &.{},
 };
 
 pub const Error = error{InvalidSampleCount} || perf.Error;
