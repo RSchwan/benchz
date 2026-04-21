@@ -7,7 +7,9 @@ const backend = if (builtin.os.tag == .macos)
 else if (builtin.os.tag == .linux)
     @import("perf_linux.zig")
 else
-    unreachable;
+    struct {
+        pub const Error = error{};
+    };
 
 pub const PerfCounter = enum {
     cycles,
@@ -27,26 +29,11 @@ pub const PerfCounts = std.enums.EnumArray(PerfCounter, ?f64);
 /// Raw counter values (totals, not per-iteration). Null if the counter was not measured.
 pub const RawCounts = std.enums.EnumArray(PerfCounter, ?u64);
 
-pub const Error = error{
+pub const Error = backend.Error || error{
     /// Performance counters are not supported on this platform.
     PerfUnsupported,
-    /// Insufficient privileges.
-    PermissionDenied,
-    DatabaseLoadFailed,
-    ConfigCreateFailed,
-    ConfigForceFailed,
-    EventNotFound,
-    EventAddFailed,
-    ConfigQueryFailed,
-    KernelConfigFailed,
-    CountingStartFailed,
-    CounterReadFailed,
-    FrameworkLoadFailed,
-    SymbolLoadFailed,
+    /// Too many counters requested for available hardware/grouping slots.
     TooManyCounters,
-    OpenFailed,
-    IoctlFailed,
-    ReadFailed,
 };
 
 /// Maximum number of counter groups (each group is one measurement pass).
@@ -211,7 +198,7 @@ test "groupCounters: single counter" {
     if (!has_backend) return error.SkipZigTest;
     const counters = [_]PerfCounter{.cycles};
     const groups = groupCounters(&counters) catch |err| {
-        if (err == error.PermissionDenied or err == error.DatabaseLoadFailed) return error.SkipZigTest;
+        if (err == error.PermissionDenied) return error.SkipZigTest;
         return err;
     };
     try testing.expect(groups.len >= 1);
@@ -227,7 +214,7 @@ test "groupCounters: all counters are assigned to groups" {
 
     const all = comptime std.enums.values(PerfCounter);
     const groups = groupCounters(all) catch |err| {
-        if (err == error.PermissionDenied or err == error.DatabaseLoadFailed) return error.SkipZigTest;
+        if (err == error.PermissionDenied) return error.SkipZigTest;
         return err;
     };
     try testing.expect(groups.len >= 1);
@@ -280,7 +267,7 @@ test "isFixedCounter: macos queries kpep" {
     // Just verify it doesn't error out — the fixed/configurable classification
     // depends on the CPU, so we don't assert specific values.
     _ = isFixedCounter(.cycles) catch |err| {
-        if (err == error.FrameworkLoadFailed or err == error.DatabaseLoadFailed or err == error.EventNotFound) return error.SkipZigTest;
+        if (err == error.PermissionDenied) return error.SkipZigTest;
         return err;
     };
 }

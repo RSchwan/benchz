@@ -7,7 +7,33 @@ const std = @import("std");
 const perf = @import("perf.zig");
 const PerfCounter = perf.PerfCounter;
 const RawCounts = perf.RawCounts;
-const Error = perf.Error;
+
+pub const Error = error{
+    PermissionDenied,
+    FrameworkLoadFailed,
+    SymbolLoadFailed,
+    KernelConfigFailed,
+    CountingStartFailed,
+    CounterReadFailed,
+
+    // kpep_config_error_code values from kperfdata.framework.
+    KpepInvalidArgument,
+    OutOfMemory,
+    KpepIoError,
+    KpepBufferTooSmall,
+    KpepCurrentSystemUnknown,
+    KpepDatabasePathInvalid,
+    KpepDatabaseNotFound,
+    KpepDatabaseArchUnsupported,
+    KpepDatabaseVersionUnsupported,
+    KpepDatabaseCorrupt,
+    EventNotFound,
+    KpepConflictingEvents,
+    KpepCountersNotForced,
+    KpepEventUnavailable,
+    KpepErrno,
+    KpepUnknownError,
+};
 
 // KPC counter class indices and bitmasks used by kpc_set_counting, kpc_set_config, etc.
 const KPC_CLASS_FIXED: u32 = 0;
@@ -27,7 +53,7 @@ const event_names = std.enums.EnumArray(PerfCounter, []const [*:0]const u8).init
     .branch_misses = &.{ "BRANCH_MISPRED_NONSPEC", "BRANCH_MISPREDICT", "BR_MISP_RETIRED.ALL_BRANCHES" },
     .cache_misses_l1d = &.{ "L1D_CACHE_MISS_LD_NONSPEC", "L1D_CACHE_MISS_LD", "MEM_LOAD_RETIRED.L1_MISS", "L1D.REPLACEMENT" },
     .cache_misses_l1i = &.{ "L1I_CACHE_MISS_DEMAND", "ICACHE_64B.IFTAG_MISS", "ICACHE.MISSES" },
-    .cache_misses_llc = &.{ "L2_CACHE_MISS_DATA", "MEM_LOAD_RETIRED.L3_MISS", "LONGEST_LAT_CACHE.MISS" },
+    .cache_misses_llc = &.{ "LD_SRC_MEMSYS_NONSPEC", "L2_CACHE_MISS_DATA", "MEM_LOAD_RETIRED.L3_MISS", "LONGEST_LAT_CACHE.MISS" },
     .tlb_misses_l1d = &.{ "L1D_TLB_MISS_NONSPEC", "L1D_TLB_MISS", "DTLB_LOAD_MISSES.MISS_CAUSES_A_WALK", "DTLB_LOAD_MISSES.WALK_COMPLETED", "DTLB_LOAD_MISSES.DEMAND_LD_MISS_CAUSES_A_WALK" },
     .tlb_misses_l1i = &.{ "L1I_TLB_MISS_DEMAND", "ITLB_MISSES.MISS_CAUSES_A_WALK", "ITLB_MISSES.WALK_COMPLETED" },
 });
@@ -39,6 +65,33 @@ const KpepConfig = opaque {};
 
 // Hardware register configuration value (one per configurable counter).
 const KpcConfigT = u64;
+
+/// Translate a kpep_config_error_code into a Zig error.
+/// Values match the kpep_config_error_code enum in kperfdata.framework.
+fn kpepError(code: c_int) Error {
+    return switch (code) {
+        1 => error.KpepInvalidArgument,
+        2 => error.OutOfMemory,
+        3 => error.KpepIoError,
+        4 => error.KpepBufferTooSmall,
+        5 => error.KpepCurrentSystemUnknown,
+        6 => error.KpepDatabasePathInvalid,
+        7 => error.KpepDatabaseNotFound,
+        8 => error.KpepDatabaseArchUnsupported,
+        9 => error.KpepDatabaseVersionUnsupported,
+        10 => error.KpepDatabaseCorrupt,
+        11 => error.EventNotFound,
+        12 => error.KpepConflictingEvents,
+        13 => error.KpepCountersNotForced,
+        14 => error.KpepEventUnavailable,
+        15 => error.KpepErrno,
+        else => error.KpepUnknownError,
+    };
+}
+
+fn kpepCheck(rc: c_int) Error!void {
+    if (rc != 0) return kpepError(rc);
+}
 
 /// Query how many fixed and configurable PMU counters the hardware supports.
 pub fn maxSimultaneousCounters() Error!perf.CounterLimits {
@@ -54,25 +107,29 @@ pub fn maxSimultaneousCounters() Error!perf.CounterLimits {
 pub fn isFixedCounter(counter: perf.PerfCounter) Error!bool {
     try loadFrameworks();
 
+    // kpc requires root; check upfront so callers see PermissionDenied rather
+    // than a downstream kpep error.
+    var force_ctrs: c_int = 0;
+    if (kpc_force_all_ctrs_get.?(&force_ctrs) != 0)
+        return error.PermissionDenied;
+
     var db: ?*KpepDb = null;
-    if (kpep_db_create.?(null, &db) != 0)
-        return error.DatabaseLoadFailed;
+    try kpepCheck(kpep_db_create.?(null, &db));
     defer kpep_db_free.?(db.?);
 
     var config: ?*KpepConfig = null;
-    if (kpep_config_create.?(db.?, &config) != 0)
-        return error.ConfigCreateFailed;
+    try kpepCheck(kpep_config_create.?(db.?, &config));
     defer kpep_config_free.?(config.?);
+
+    try kpepCheck(kpep_config_force_counters.?(config.?));
 
     const names = event_names.get(counter);
     var ev = findEvent(db.?, names) orelse
         return error.EventNotFound;
-    if (kpep_config_add_event.?(config.?, @ptrCast(&ev), 0, null) != 0)
-        return error.EventAddFailed;
+    try kpepCheck(kpep_config_add_event.?(config.?, @ptrCast(&ev), 0, null));
 
     var classes: u32 = 0;
-    if (kpep_config_kpc_classes.?(config.?, &classes) != 0)
-        return error.ConfigQueryFailed;
+    try kpepCheck(kpep_config_kpc_classes.?(config.?, &classes));
 
     return (classes & KPC_CLASS_FIXED_MASK) != 0;
 }
@@ -104,26 +161,22 @@ pub const BackendState = struct {
 
         // Load PMC database for current CPU
         var db: ?*KpepDb = null;
-        if (kpep_db_create.?(null, &db) != 0)
-            return error.DatabaseLoadFailed;
+        try kpepCheck(kpep_db_create.?(null, &db));
         defer kpep_db_free.?(db.?);
 
         // Create config
         var config: ?*KpepConfig = null;
-        if (kpep_config_create.?(db.?, &config) != 0)
-            return error.ConfigCreateFailed;
+        try kpepCheck(kpep_config_create.?(db.?, &config));
         defer kpep_config_free.?(config.?);
 
-        if (kpep_config_force_counters.?(config.?) != 0)
-            return error.ConfigForceFailed;
+        try kpepCheck(kpep_config_force_counters.?(config.?));
 
         // Look up and add each event
         for (counters) |counter| {
             const names = event_names.get(counter);
             var ev = findEvent(db.?, names) orelse
                 return error.EventNotFound;
-            if (kpep_config_add_event.?(config.?, @ptrCast(&ev), 0, null) != 0)
-                return error.EventAddFailed;
+            try kpepCheck(kpep_config_add_event.?(config.?, @ptrCast(&ev), 0, null));
         }
 
         // Extract KPC configuration from kpep:
@@ -133,14 +186,10 @@ pub const BackendState = struct {
         var classes: u32 = 0;
         var reg_count: usize = 0;
         var regs: [KPC_MAX_COUNTERS]KpcConfigT = .{0} ** KPC_MAX_COUNTERS;
-        if (kpep_config_kpc_classes.?(config.?, &classes) != 0)
-            return error.ConfigQueryFailed;
-        if (kpep_config_kpc_count.?(config.?, &reg_count) != 0)
-            return error.ConfigQueryFailed;
-        if (kpep_config_kpc_map.?(config.?, &state.counter_map, @sizeOf(@TypeOf(state.counter_map))) != 0)
-            return error.ConfigQueryFailed;
-        if (kpep_config_kpc.?(config.?, &regs, @sizeOf(@TypeOf(regs))) != 0)
-            return error.ConfigQueryFailed;
+        try kpepCheck(kpep_config_kpc_classes.?(config.?, &classes));
+        try kpepCheck(kpep_config_kpc_count.?(config.?, &reg_count));
+        try kpepCheck(kpep_config_kpc_map.?(config.?, &state.counter_map, @sizeOf(@TypeOf(state.counter_map))));
+        try kpepCheck(kpep_config_kpc.?(config.?, &regs, @sizeOf(@TypeOf(regs))));
 
         // Apply config to kernel: claim exclusive counter access and program registers.
         if (kpc_force_all_ctrs_set.?(1) != 0)

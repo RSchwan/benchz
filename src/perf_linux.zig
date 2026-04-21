@@ -5,7 +5,14 @@ const linux = std.os.linux;
 const p = @import("perf.zig");
 const PerfCounter = p.PerfCounter;
 const RawCounts = p.RawCounts;
-const Error = p.Error;
+
+pub const Error = error{
+    PermissionDenied,
+    TooManyCounters,
+    OpenFailed,
+    IoctlFailed,
+    ReadFailed,
+};
 
 /// Maps to perf_event_attr.type + config fields.
 const PerfEventConfig = struct {
