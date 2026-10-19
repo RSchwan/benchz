@@ -215,7 +215,12 @@ fn unwrapPointerType(comptime T: type) type {
     return T;
 }
 
+var perf_unavailable_warned = false;
+
 fn warnPerfUnavailable(err: perf.Error) void {
+    if (perf_unavailable_warned) return;
+    perf_unavailable_warned = true;
+
     if (err == error.PermissionDenied) {
         if (builtin.os.tag == .linux) {
             std.log.warn("perf counters unavailable (permission denied), try running with sudo or 'sudo sysctl kernel.perf_event_paranoid=1'", .{});
