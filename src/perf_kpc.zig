@@ -139,9 +139,9 @@ pub fn isFixedCounter(counter: perf.PerfCounter) Error!bool {
 /// so we configure on init and tear down on deinit to avoid stale state between groups.
 pub const BackendState = struct {
     /// Maps event index (0..N) to the hardware counter slot assigned by kpep.
-    counter_map: [KPC_MAX_COUNTERS]usize = .{0} ** KPC_MAX_COUNTERS,
+    counter_map: [KPC_MAX_COUNTERS]usize = @splat(0),
     /// Snapshot of thread counters taken in readBefore.
-    counters_before: [KPC_MAX_COUNTERS]u64 = .{0} ** KPC_MAX_COUNTERS,
+    counters_before: [KPC_MAX_COUNTERS]u64 = @splat(0),
     requested: []const PerfCounter = &.{},
 
     /// Load the kpep database, configure the requested events, program the kernel,
@@ -185,7 +185,7 @@ pub const BackendState = struct {
         // - regs: register values to program into configurable counters
         var classes: u32 = 0;
         var reg_count: usize = 0;
-        var regs: [KPC_MAX_COUNTERS]KpcConfigT = .{0} ** KPC_MAX_COUNTERS;
+        var regs: [KPC_MAX_COUNTERS]KpcConfigT = @splat(0);
         try kpepCheck(kpep_config_kpc_classes.?(config.?, &classes));
         try kpepCheck(kpep_config_kpc_count.?(config.?, &reg_count));
         try kpepCheck(kpep_config_kpc_map.?(config.?, &state.counter_map, @sizeOf(@TypeOf(state.counter_map))));
@@ -234,7 +234,7 @@ pub const BackendState = struct {
         var result = RawCounts.initFill(null);
         if (self.requested.len == 0) return result;
 
-        var counters_after: [KPC_MAX_COUNTERS]u64 = .{0} ** KPC_MAX_COUNTERS;
+        var counters_after: [KPC_MAX_COUNTERS]u64 = @splat(0);
         if (kpc_get_thread_counters.?(0, KPC_MAX_COUNTERS, &counters_after) != 0)
             return error.CounterReadFailed;
 

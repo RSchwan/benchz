@@ -80,7 +80,7 @@ pub const CounterGroup = struct {
 /// Collection of counter groups. When more counters are requested than hardware
 /// supports simultaneously, they are split across multiple groups (measurement passes).
 pub const CounterGroups = struct {
-    groups: [max_groups]CounterGroup = .{CounterGroup{}} ** max_groups,
+    groups: [max_groups]CounterGroup = @splat(.{}),
     len: usize = 0,
 
     pub fn slice(self: *const CounterGroups) []const CounterGroup {

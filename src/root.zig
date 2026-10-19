@@ -41,7 +41,7 @@ pub fn run(allocator: Allocator, name: []const u8, func: anytype, args: anytype,
     checkFuncAndArgs(@TypeOf(func), @TypeOf(args));
 
     const Params = std.meta.ArgsTuple(unwrapPointerType(@TypeOf(func)));
-    const params_len = @typeInfo(unwrapPointerType(@TypeOf(func))).@"fn".params.len;
+    const params_len = @typeInfo(unwrapPointerType(@TypeOf(func))).@"fn".param_types.len;
     var params: Params = undefined;
     inline for (0..params_len) |i| {
         params[i] = args[i];
@@ -199,8 +199,8 @@ fn checkFuncAndArgs(comptime FuncType: type, comptime ArgsType: type) void {
         @compileError("args must be a tuple, found '" ++ @typeName(ArgsType) ++ "'");
     }
 
-    const params_len = @typeInfo(unwrapPointerType(FuncType)).@"fn".params.len;
-    const args_len = @typeInfo(ArgsType).@"struct".fields.len;
+    const params_len = @typeInfo(unwrapPointerType(FuncType)).@"fn".param_types.len;
+    const args_len = @typeInfo(ArgsType).@"struct".field_names.len;
 
     if (params_len != args_len) {
         @compileError(std.fmt.comptimePrint(

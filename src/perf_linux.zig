@@ -21,7 +21,7 @@ const PerfEventConfig = struct {
 };
 
 fn hwEvent(hw: linux.PERF.COUNT.HW) PerfEventConfig {
-    return .{ .type = .HARDWARE, .config = @intFromEnum(hw) };
+    return .{ .type = .HARDWARE, .config = @backingInt(hw) };
 }
 
 /// Encode a HW_CACHE event: cache_id | (op << 8) | (result << 16).
@@ -32,7 +32,7 @@ fn cacheEvent(
 ) PerfEventConfig {
     return .{
         .type = .HW_CACHE,
-        .config = @intFromEnum(cache_id) | (@as(u64, @intFromEnum(op)) << 8) | (@as(u64, @intFromEnum(result)) << 16),
+        .config = @backingInt(cache_id) | (@as(u64, @backingInt(op)) << 8) | (@as(u64, @backingInt(result)) << 16),
     };
 }
 
@@ -60,8 +60,8 @@ const MAX_COUNTERS = 16;
 /// Probes fixed and configurable (general-purpose) counters separately.
 pub fn maxSimultaneousCounters() Error!p.CounterLimits {
     return .{
-        .fixed = probeCounterCapacity(.HARDWARE, @intFromEnum(linux.PERF.COUNT.HW.CPU_CYCLES)),
-        .configurable = probeCounterCapacity(.HARDWARE, @intFromEnum(linux.PERF.COUNT.HW.BRANCH_INSTRUCTIONS)),
+        .fixed = probeCounterCapacity(.HARDWARE, @backingInt(linux.PERF.COUNT.HW.CPU_CYCLES)),
+        .configurable = probeCounterCapacity(.HARDWARE, @backingInt(linux.PERF.COUNT.HW.BRANCH_INSTRUCTIONS)),
     };
 }
 
@@ -70,7 +70,7 @@ pub fn maxSimultaneousCounters() Error!p.CounterLimits {
 /// Pinned events must be scheduled on real hardware — no multiplexing — so
 /// the kernel rejects the open once all physical PMU slots are occupied.
 fn probeCounterCapacity(event_type: linux.PERF.TYPE, config: u64) usize {
-    var fds: [MAX_COUNTERS]linux.fd_t = .{-1} ** MAX_COUNTERS;
+    var fds: [MAX_COUNTERS]linux.fd_t = @splat(-1);
     defer for (&fds) |*fd| {
         if (fd.* != -1) _ = linux.close(fd.*);
     };
@@ -103,8 +103,8 @@ fn probeCounterCapacity(event_type: linux.PERF.TYPE, config: u64) usize {
 
 /// Per-measurement-pass state. Opens perf events in a pinned group (no multiplexing).
 pub const BackendState = struct {
-    fds: [MAX_COUNTERS]linux.fd_t = .{-1} ** MAX_COUNTERS,
-    ids: [MAX_COUNTERS]u64 = .{0} ** MAX_COUNTERS,
+    fds: [MAX_COUNTERS]linux.fd_t = @splat(-1),
+    ids: [MAX_COUNTERS]u64 = @splat(0),
     requested: []const PerfCounter = &.{},
 
     /// Open an event group for the requested counters.
@@ -184,7 +184,7 @@ pub const BackendState = struct {
         const header_size = 3; // nr + time_enabled + time_running
         const entry_size = 2; // value + id
         const buf_len = header_size + MAX_COUNTERS * entry_size;
-        var buf: [buf_len]u64 = .{0} ** buf_len;
+        var buf: [buf_len]u64 = @splat(0);
 
         const read_size = @sizeOf(u64) * (header_size + self.requested.len * entry_size);
         const buf_ptr: [*]u8 = @ptrCast(&buf);
